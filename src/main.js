@@ -1,7 +1,7 @@
 import './style.css';
 
-const APP_VERSION = '0.3.0-reader-spacing-controls-20260701';
-const LAYOUT_PRESET_VERSION = 'treader-controls-20260701';
+const APP_VERSION = '0.4.0';
+const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
   localStorage.setItem('lineHeight', '1.3');
@@ -321,57 +321,54 @@ function getChapterIndex(paraIdx) {
   return ci;
 }
 
-function readSafeAreaInsets() {
-  const probe = document.createElement('div');
-  probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);';
-  document.body.appendChild(probe);
-  const style = getComputedStyle(probe);
-  const top = parseFloat(style.paddingTop) || 0;
-  const bottom = parseFloat(style.paddingBottom) || 0;
-  probe.remove();
-  return { top, bottom };
+function applyReaderTypography(node) {
+  if (!node) return;
+  node.style.fontSize = `${state.fontSize}px`;
+  node.style.lineHeight = String(state.lineHeight);
+  node.style.fontFamily = getFontCss();
+  node.style.setProperty('--para-gap', getParagraphGapEm());
 }
 
-function getReaderLayoutMetrics() {
-  const viewportW = window.innerWidth;
-  const viewportH = window.visualViewport?.height || window.innerHeight;
-  const safe = readSafeAreaInsets();
-  const marginX = viewportW >= 500 ? viewportW * 0.03 : 15;
-  const marginY = viewportH >= 667 ? viewportH * 0.03 : 20;
-  const bodyTop = Math.max(marginY, safe.top);
-  const bodyBottom = Math.max(marginY, safe.bottom) + 20;
-  return { viewportW, viewportH, marginX, marginY, bodyTop, bodyBottom };
+function makeParagraph(text, idx) {
+  const p = document.createElement('p');
+  p.className = 'para';
+  if (Number.isFinite(idx)) p.dataset.paraIdx = idx;
+  p.textContent = text;
+  return p;
+}
+
+function createPaginationProbe() {
+  const shell = document.createElement('article');
+  shell.className = 'rpage page-probe';
+  shell.setAttribute('aria-hidden', 'true');
+  shell.style.width = `${window.innerWidth}px`;
+  shell.style.height = `${window.innerHeight}px`;
+  const body = document.createElement('div');
+  body.className = 'rp-body';
+  applyReaderTypography(body);
+  shell.appendChild(body);
+  document.body.appendChild(shell);
+  return { shell, body };
 }
 
 function paginate(goToPara = 0) {
   const book = state.currentBook;
   if (!book) return;
-  const probe = document.createElement('div');
-  probe.className = 'page-probe';
-  const layout = getReaderLayoutMetrics();
-  probe.style.width = `${Math.max(240, layout.viewportW - layout.marginX * 2)}px`;
-  probe.style.height = `${Math.max(220, layout.viewportH - layout.bodyTop - layout.bodyBottom)}px`;
-  probe.style.fontSize = `${state.fontSize}px`;
-  probe.style.lineHeight = String(state.lineHeight);
-  probe.style.fontFamily = getFontCss();
-  probe.style.setProperty('--para-gap', getParagraphGapEm());
-  document.body.appendChild(probe);
+  const { shell: probe, body: probeBody } = createPaginationProbe();
   const pages = [];
   let cursor = 0;
   let targetPage = 0;
   const chapterStarts = new Set((book.chapters || []).map(ch => ch.idx));
   while (cursor < book.paragraphs.length) {
-    probe.innerHTML = '';
+    probeBody.innerHTML = '';
     const startPara = cursor;
     let endPara = cursor;
     while (endPara < book.paragraphs.length) {
       if (endPara > startPara && chapterStarts.has(endPara)) break;
-      const p = document.createElement('p');
-      p.className = 'para';
-      p.textContent = book.paragraphs[endPara];
-      probe.appendChild(p);
-      if (probe.scrollHeight > probe.clientHeight) {
-        probe.removeChild(p);
+      const p = makeParagraph(book.paragraphs[endPara]);
+      probeBody.appendChild(p);
+      if (probeBody.scrollHeight > probeBody.clientHeight) {
+        probeBody.removeChild(p);
         if (endPara === startPara) endPara += 1;
         break;
       }
@@ -395,17 +392,10 @@ function renderPage() {
   if (!body || !state.currentBook) return;
   const page = state.pages[state.currentPage] || state.pages[0];
   title && (title.textContent = state.currentBook.title);
-  body.style.fontSize = `${state.fontSize}px`;
-  body.style.lineHeight = String(state.lineHeight);
-  body.style.fontFamily = getFontCss();
-  body.style.setProperty('--para-gap', getParagraphGapEm());
+  applyReaderTypography(body);
   body.innerHTML = '';
   for (let i = page.startPara; i <= page.endPara && i < state.currentBook.paragraphs.length; i++) {
-    const p = document.createElement('p');
-    p.className = 'para';
-    p.dataset.paraIdx = i;
-    p.textContent = state.currentBook.paragraphs[i];
-    body.appendChild(p);
+    body.appendChild(makeParagraph(state.currentBook.paragraphs[i], i));
   }
   const total = state.pages.length || 1;
   const percent = total > 1 ? Math.round((state.currentPage / (total - 1)) * 100) : 0;
@@ -464,6 +454,13 @@ function highlightPara(idx) {
 function renderTtsState() {
   const btn = $('#rfPlay');
   if (btn) btn.textContent = tts.state === 'playing' ? '⏸' : '▶';
+  const sleepBtn = $('#sleepBtn');
+  if (sleepBtn) {
+    const left = sleepMinutesLeft();
+    sleepBtn.textContent = left ? `${left}` : '⏱';
+    sleepBtn.classList.toggle('on', Boolean(left));
+    sleepBtn.title = left ? `定時關閉：剩 ${left} 分` : '設定 15 分鐘定時關閉';
+  }
 }
 function sleepMinutesLeft() {
   return Math.max(0, Math.ceil((state.sleepUntil - Date.now()) / 60000));
@@ -477,14 +474,15 @@ function setSleepTimer(minutes) {
   } else {
     state.sleepUntil = Date.now() + minutes * 60000;
     localStorage.setItem('sleepUntil', String(state.sleepUntil));
-    state.sleepTimer = setTimeout(() => { tts.stop(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); }, minutes * 60000);
+    state.sleepTimer = setTimeout(() => { tts.stop(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, minutes * 60000);
     toast(`已設定 ${minutes} 分鐘後停止`);
   }
   renderPanel();
+  renderTtsState();
 }
 function restoreSleepTimer() {
   const left = state.sleepUntil - Date.now();
-  if (left > 0) state.sleepTimer = setTimeout(() => { tts.stop(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); }, left);
+  if (left > 0) state.sleepTimer = setTimeout(() => { tts.stop(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, left);
   else { state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); }
 }
 
@@ -507,7 +505,7 @@ function readerTemplate() {
     <section class="reader-view">
       <header class="reader-head ${state.toolbarOn ? 'show' : ''}"><button class="rbk" id="backBtn">◀ 書庫</button><div class="rtitle">${esc(book.title)}</div><div class="rtool"><button class="ribt" id="tocBtn">☰</button><button class="ribt" id="setBtn">⚙</button></div></header>
       <main class="rbook" id="rbook"><div class="tap-zone zone-left" id="zoneLeft"></div><div class="tap-zone zone-mid" id="zoneMid"></div><div class="tap-zone zone-right" id="zoneRight"></div><article class="rpage"><div class="rp-body"></div><footer class="rp-foot"><span class="rp-num">…</span></footer></article></main>
-      <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay">▶</button><button class="rfbt" id="rfStop">⏹</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-div"></div><button class="rftog" id="themeBtn">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
+      <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay" aria-label="播放/暫停">▶</button><button class="rfbt" id="rfStop" aria-label="停止">⏹</button><button class="rfbt" id="sleepBtn" aria-label="定時關閉">⏱</button><div class="rf-div"></div><button class="rfbt" id="bottomTocBtn" aria-label="目錄">☰</button><button class="rfbt" id="bottomSetBtn" aria-label="設定">⚙</button><button class="rftog" id="themeBtn" aria-label="日夜切換">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
       <div id="panelRoot"></div>
     </section>`;
 }
@@ -582,6 +580,9 @@ function bindEvents() {
   $('#rbook')?.addEventListener('touchstart', e => { if (e.touches.length > 1 && e.cancelable) e.preventDefault(); }, { passive: false });
   $('#tocBtn')?.addEventListener('click', () => openPanel('toc'));
   $('#setBtn')?.addEventListener('click', () => openPanel('settings'));
+  $('#bottomTocBtn')?.addEventListener('click', () => openPanel('toc'));
+  $('#bottomSetBtn')?.addEventListener('click', () => openPanel('settings'));
+  $('#sleepBtn')?.addEventListener('click', () => setSleepTimer(sleepMinutesLeft() ? 0 : 15));
   $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());
   $('#rfStop')?.addEventListener('click', () => tts.stop());
   $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); localStorage.setItem('fontSize', state.fontSize); repaginateKeepPosition(); });
@@ -593,7 +594,7 @@ async function render() {
   document.documentElement.dataset.theme = state.theme;
   $('#app').innerHTML = state.view === 'reader' ? readerTemplate() : libraryTemplate();
   bindEvents();
-  if (state.view === 'reader') { renderPage(); renderPanel(); }
+  if (state.view === 'reader') { renderPage(); renderPanel(); renderTtsState(); }
 }
 async function boot() {
   setTheme(state.theme);
