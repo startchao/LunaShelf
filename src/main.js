@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.2.6-20260701';
+const APP_VERSION = '0.2.7-20260701';
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
 
