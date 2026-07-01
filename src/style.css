@@ -38,7 +38,7 @@
   --sh2: rgba(0,0,0,.68);
 }
 *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--bg); }
+html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--bg); touch-action: manipulation; -webkit-text-size-adjust: 100%; }
 body { color: var(--tx); font-family: var(--font-serif); transition: background .25s, color .25s; }
 button, select { font: inherit; color: inherit; -webkit-appearance: none; appearance: none; }
 button { border: 0; background: none; cursor: pointer; }
@@ -80,7 +80,7 @@ button { border: 0; background: none; cursor: pointer; }
 
 /* Reader: page-turn zones, no vertical scrolling */
 .reader-view { position: fixed; inset: 0; background: var(--bg); overflow: hidden; }
-.reader-head { position: fixed; top: 0; left: 0; right: 0; z-index: 60; height: var(--topH); padding: 0 10px; display: flex; align-items: center; gap: 6px; background: var(--bg2); border-bottom: 1.5px solid var(--bd2); box-shadow: 0 2px 10px var(--sh); transform: translateY(-100%); transition: transform .26s var(--ease); }
+.reader-head { position: fixed; top: 0; left: 0; right: 0; z-index: 60; height: calc(var(--topH) + env(safe-area-inset-top, 0px)); padding: env(safe-area-inset-top, 0px) 10px 0; display: flex; align-items: center; gap: 6px; background: var(--bg2); border-bottom: 1.5px solid var(--bd2); box-shadow: 0 2px 10px var(--sh); transform: translateY(-100%); transition: transform .26s var(--ease); }
 .reader-head.show { transform: translateY(0); }
 .rbk { display: flex; align-items: center; gap: 4px; padding: 6px 10px 6px 4px; border-radius: 14px; font-size: 14px; font-weight: 700; color: var(--ac); white-space: nowrap; }
 .rbk:active { background: var(--acp); }
@@ -92,14 +92,14 @@ button { border: 0; background: none; cursor: pointer; }
 .zone-left { left: 0; width: 25%; }
 .zone-mid { left: 25%; width: 50%; }
 .zone-right { right: 0; width: 25%; }
-.rpage { position: absolute; inset: 0; display: flex; flex-direction: column; padding: 10px 20px 12px; background: var(--bg); overflow: hidden; }
+.rpage { position: absolute; inset: 0; display: flex; flex-direction: column; padding: max(54px, calc(env(safe-area-inset-top, 0px) + 24px)) 20px max(18px, calc(env(safe-area-inset-bottom, 0px) + 12px)); background: var(--bg); overflow: hidden; }
 .rp-body { flex: 1; overflow: hidden; font-family: var(--font-serif); color: var(--tx); }
 .chapter-title { margin: 0 0 1em; font-size: .98em; font-weight: 600; line-height: 1.8; text-indent: 0; }
 .para { margin: 0 0 .75em; line-height: inherit; text-align: justify; text-indent: 2em; word-break: break-all; }
 .para.tts-hi { background: var(--acp); border-left: 2px solid var(--ac); padding-left: 8px; text-indent: 0; }
 .rp-foot { flex-shrink: 0; padding-top: 4px; margin-top: 2px; display: flex; align-items: center; justify-content: center; border-top: 1px solid var(--bd); opacity: .38; }
 .rp-num { font-size: 10px; color: var(--tx3); }
-.reader-controls { position: fixed; left: 0; right: 0; bottom: 0; z-index: 60; height: var(--botH); display: flex; align-items: center; padding: 0 10px calc(env(safe-area-inset-bottom) * .2); gap: 5px; background: var(--bg2); border-top: 1.5px solid var(--bd2); box-shadow: 0 -2px 10px var(--sh); transform: translateY(100%); transition: transform .26s var(--ease); }
+.reader-controls { position: fixed; left: 0; right: 0; bottom: 0; z-index: 60; height: calc(var(--botH) + env(safe-area-inset-bottom, 0px)); display: flex; align-items: center; padding: 0 10px env(safe-area-inset-bottom, 0px); gap: 5px; background: var(--bg2); border-top: 1.5px solid var(--bd2); box-shadow: 0 -2px 10px var(--sh); transform: translateY(100%); transition: transform .26s var(--ease); }
 .reader-controls.show { transform: translateY(0); }
 .rfbt, .rffont, .rftog { height: 38px; min-width: 38px; border-radius: 10px; display: grid; place-items: center; padding: 0 9px; font-weight: 800; color: var(--tx2); border: 1.5px solid var(--bd2); background: var(--bg3); flex-shrink: 0; }
 .rfbt:active, .rfbt.on, .rffont:active, .rftog:active { background: var(--ac); color: #fff; border-color: var(--ac); transform: scale(.94); }

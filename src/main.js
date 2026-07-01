@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.2.0-20260701';
+const APP_VERSION = '0.2.1-20260701';
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
 
@@ -21,6 +21,7 @@ const state = {
   panel: null,
   pages: [],
   currentPage: 0,
+  lastTapAt: 0,
 };
 
 class DB {
@@ -165,51 +166,90 @@ class AudioSessionManager {
 class SpeechQueue {
   constructor() {
     this.state = 'idle';
-    this.queueSize = 8;
-    this.maxChars = 900;
+    this.maxChars = 260;
     this.nextPara = 0;
-    this.pending = new Set();
+    this.segments = [];
+    this.segmentIndex = 0;
+    this.currentUtterance = null;
     this.audioSession = new AudioSessionManager();
+    this.startWatchdog = null;
+  }
+  isSupported() { return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window; }
+  pickVoice() {
+    const voices = speechSynthesis.getVoices();
+    return voices.find(v => /zh-TW|zh_Hant|cmn-Hant|Taiwan/i.test(`${v.lang} ${v.name}`))
+      || voices.find(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
+  }
+  splitText(text) {
+    const src = text.trim();
+    if (src.length <= this.maxChars) return [src];
+    const out = [];
+    let rest = src;
+    while (rest.length > this.maxChars) {
+      const win = rest.slice(0, this.maxChars);
+      const cut = Math.max(win.lastIndexOf('。'), win.lastIndexOf('！'), win.lastIndexOf('？'), win.lastIndexOf('…'));
+      const at = cut > 80 ? cut + 1 : this.maxChars;
+      out.push(rest.slice(0, at).trim());
+      rest = rest.slice(at).trim();
+    }
+    if (rest) out.push(rest);
+    return out;
   }
   makeUtterance(text, paraIdx) {
-    const u = new SpeechSynthesisUtterance(text.slice(0, this.maxChars));
-    const voices = speechSynthesis.getVoices();
-    const zh = voices.find(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
+    const u = new SpeechSynthesisUtterance(text);
+    const zh = this.pickVoice();
     if (zh) u.voice = zh;
     u.lang = zh?.lang || 'zh-TW';
     u.rate = Number(localStorage.getItem('speechRate') || 1);
+    u.pitch = 1;
+    u.volume = 1;
     u.onstart = () => highlightPara(paraIdx);
-    u.onend = () => { this.pending.delete(u); this.nextPara = Math.max(this.nextPara, paraIdx + 1); saveProgressFromPage(); this.fill(); };
-    u.onerror = () => { this.pending.delete(u); this.fill(); };
+    u.onend = () => { this.currentUtterance = null; this.nextPara = Math.max(this.nextPara, paraIdx + 1); saveProgressFromPage(); this.speakNext(); };
+    u.onerror = ev => { console.warn('TTS error', ev.error || ev); this.currentUtterance = null; this.nextPara = Math.max(this.nextPara, paraIdx + 1); this.speakNext(); };
     return u;
   }
-  async play() {
+  buildSegments(startPara) {
+    const book = state.currentBook;
+    const out = [];
+    for (let i = startPara; book && i < book.paragraphs.length; i++) {
+      for (const text of this.splitText(book.paragraphs[i] || '')) if (text) out.push({ text, paraIdx: i });
+    }
+    return out;
+  }
+  play() {
     if (!state.currentBook) return toast('請先開啟一本 TXT');
+    if (!this.isSupported()) return toast('這個瀏覽器不支援朗讀，請用 Safari/Edge/Chrome 測試');
     if (this.state === 'playing') return;
     this.state = 'playing';
     const page = state.pages[state.currentPage];
-    this.nextPara = page?.startPara ?? 0;
-    await this.audioSession.start(state.currentBook);
+    this.nextPara = page?.startPara ?? state.currentBook.progressPara ?? 0;
+    this.segments = this.buildSegments(this.nextPara);
+    this.segmentIndex = 0;
     speechSynthesis.cancel();
-    this.pending.clear();
-    this.fill();
+    this.currentUtterance = null;
+    this.speakNext();
+    this.audioSession.start(state.currentBook).catch(err => console.warn('Audio session start blocked', err));
     renderTtsState();
+    clearTimeout(this.startWatchdog);
+    this.startWatchdog = setTimeout(() => {
+      if (this.state === 'playing' && !speechSynthesis.speaking && !speechSynthesis.pending) {
+        this.state = 'idle';
+        renderTtsState();
+        toast('朗讀未啟動，請再點一次播放；iPhone 可能需要使用者手勢');
+      }
+    }, 1400);
   }
-  fill() {
+  speakNext() {
     const book = state.currentBook;
     if (this.state !== 'playing' || !book) return;
-    while (this.pending.size < this.queueSize && this.nextPara < book.paragraphs.length) {
-      const text = book.paragraphs[this.nextPara]?.trim();
-      if (!text) { this.nextPara += 1; continue; }
-      const u = this.makeUtterance(text, this.nextPara);
-      this.pending.add(u);
-      this.nextPara += 1;
-      speechSynthesis.speak(u);
-    }
-    if (!this.pending.size && this.nextPara >= book.paragraphs.length) this.stop();
+    const seg = this.segments[this.segmentIndex++];
+    if (!seg) return this.stop();
+    this.nextPara = seg.paraIdx;
+    this.currentUtterance = this.makeUtterance(seg.text, seg.paraIdx);
+    speechSynthesis.speak(this.currentUtterance);
   }
-  pause() { this.state = 'paused'; this.audioSession.stop(); speechSynthesis.cancel(); this.pending.clear(); renderTtsState(); saveProgressFromPage(); }
-  stop() { this.state = 'idle'; this.audioSession.stop(); speechSynthesis.cancel(); this.pending.clear(); renderTtsState(); saveProgressFromPage(); }
+  pause() { this.state = 'paused'; this.audioSession.stop(); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
+  stop() { this.state = 'idle'; this.audioSession.stop(); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
 }
 
 const tts = new SpeechQueue();
@@ -270,8 +310,12 @@ function paginate(goToPara = 0) {
   if (!book) return;
   const probe = document.createElement('div');
   probe.className = 'page-probe';
+  const safeTop = Number(getComputedStyle(document.documentElement).getPropertyValue('--safe-top-px')) || 0;
+  const safeBottom = Number(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom-px')) || 0;
+  const topPad = Math.max(54, safeTop + 24);
+  const bottomPad = Math.max(18, safeBottom + 12);
   probe.style.width = `${Math.max(240, window.innerWidth - 40)}px`;
-  probe.style.height = `${Math.max(320, (window.visualViewport?.height || window.innerHeight) - 42)}px`;
+  probe.style.height = `${Math.max(260, (window.visualViewport?.height || window.innerHeight) - topPad - bottomPad - 22)}px`;
   probe.style.fontSize = `${state.fontSize}px`;
   probe.style.lineHeight = String(state.lineHeight);
   probe.style.fontFamily = getFontCss();
@@ -355,7 +399,11 @@ function toggleToolbar(force) {
 }
 function handleReaderTap(e) {
   if (!state.currentBook) return;
+  if (e.cancelable) e.preventDefault();
   if (e.target.closest('.reader-head, .reader-controls, .pback, button, input, select, label')) return;
+  const now = Date.now();
+  if (now - state.lastTapAt < 260) return;
+  state.lastTapAt = now;
   const x = e.clientX ?? e.changedTouches?.[0]?.clientX;
   if (!Number.isFinite(x)) return;
   const ratio = x / window.innerWidth;
@@ -459,6 +507,8 @@ function bindEvents() {
   $$('[data-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('books', btn.dataset.delete); state.books = (await DB.all('books')).map(TxtParser.enrichBook); render(); }));
   $('#backBtn')?.addEventListener('click', async () => { tts.stop(); state.books = (await DB.all('books')).map(TxtParser.enrichBook); state.view = 'library'; render(); });
   $('#rbook')?.addEventListener(window.PointerEvent ? 'pointerup' : 'click', handleReaderTap);
+  $('#rbook')?.addEventListener('dblclick', e => e.preventDefault());
+  $('#rbook')?.addEventListener('touchstart', e => { if (e.touches.length > 1 && e.cancelable) e.preventDefault(); }, { passive: false });
   $('#tocBtn')?.addEventListener('click', () => openPanel('toc'));
   $('#setBtn')?.addEventListener('click', () => openPanel('settings'));
   $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());
