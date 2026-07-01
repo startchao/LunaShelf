@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.2.1-20260701';
+const APP_VERSION = '0.2.2-20260701';
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
 
@@ -11,6 +11,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 
 const state = {
   books: [],
+  fonts: [],
   currentBook: null,
   theme: localStorage.getItem('theme') || 'light',
   fontFamily: localStorage.getItem('fontFamily') || 'serif',
@@ -22,6 +23,8 @@ const state = {
   pages: [],
   currentPage: 0,
   lastTapAt: 0,
+  sleepUntil: Number(localStorage.getItem('sleepUntil') || 0),
+  sleepTimer: null,
 };
 
 class DB {
@@ -65,7 +68,8 @@ class UpdateManager {
       await Promise.all(keys.map(key => caches.delete(key)));
     }
   }
-  static forceNetworkReload() {
+  static async forceNetworkReload() {
+    await UpdateManager.disableServiceWorkerCache().catch(err => console.warn('cache cleanup skipped', err));
     const url = new URL(location.href);
     url.searchParams.set('v', Date.now().toString());
     url.searchParams.set('network', 'latest');
@@ -87,6 +91,7 @@ class FontManager {
     await FontManager.activate(font);
     state.fontFamily = `custom-${font.id}`;
     localStorage.setItem('fontFamily', state.fontFamily);
+    state.fonts = await DB.all('fonts');
     return font;
   }
   static async activate(font) {
@@ -310,11 +315,9 @@ function paginate(goToPara = 0) {
   if (!book) return;
   const probe = document.createElement('div');
   probe.className = 'page-probe';
-  const safeTop = Number(getComputedStyle(document.documentElement).getPropertyValue('--safe-top-px')) || 0;
-  const safeBottom = Number(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom-px')) || 0;
-  const topPad = Math.max(54, safeTop + 24);
-  const bottomPad = Math.max(18, safeBottom + 12);
-  probe.style.width = `${Math.max(240, window.innerWidth - 40)}px`;
+  const topPad = 66;
+  const bottomPad = 74;
+  probe.style.width = `${Math.max(240, window.innerWidth - 52)}px`;
   probe.style.height = `${Math.max(260, (window.visualViewport?.height || window.innerHeight) - topPad - bottomPad - 22)}px`;
   probe.style.fontSize = `${state.fontSize}px`;
   probe.style.lineHeight = String(state.lineHeight);
@@ -430,13 +433,34 @@ function renderTtsState() {
   const btn = $('#rfPlay');
   if (btn) btn.textContent = tts.state === 'playing' ? '⏸' : '▶';
 }
+function sleepMinutesLeft() {
+  return Math.max(0, Math.ceil((state.sleepUntil - Date.now()) / 60000));
+}
+function setSleepTimer(minutes) {
+  clearTimeout(state.sleepTimer);
+  if (!minutes) {
+    state.sleepUntil = 0;
+    localStorage.removeItem('sleepUntil');
+    toast('已關閉定時');
+  } else {
+    state.sleepUntil = Date.now() + minutes * 60000;
+    localStorage.setItem('sleepUntil', String(state.sleepUntil));
+    state.sleepTimer = setTimeout(() => { tts.stop(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); }, minutes * 60000);
+    toast(`已設定 ${minutes} 分鐘後停止`);
+  }
+  renderPanel();
+}
+function restoreSleepTimer() {
+  const left = state.sleepUntil - Date.now();
+  if (left > 0) state.sleepTimer = setTimeout(() => { tts.stop(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); }, left);
+  else { state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); }
+}
 
 function libraryTemplate() {
   return `
     <header class="lhd"><div class="lhd-logo">月閣 <small>LunaShelf v${APP_VERSION}</small></div><button class="ibt" id="refreshBtn" aria-label="強制更新">↻</button><button class="ibt" id="themeBtn" aria-label="切換夜間">${state.theme === 'dark' ? '☀' : '🌙'}</button><button class="ibt" id="topImportBtn" aria-label="匯入 TXT">＋</button></header>
     <main class="lbody">
       <div class="lbar"><span class="lbar-t">書庫</span><div class="lbar-l"></div><span class="lbar-c">${state.books.length} 本</span></div>
-      <div class="mini-tools"><label class="mini-btn">匯入字體<input id="fontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label><select id="fontSelect"><option value="serif">宋體</option><option value="system">黑體</option></select><button id="clearCaches">清除快取</button></div>
       <section class="blist">${state.books.map(bookRow).join('') || '<div class="bempty"><div class="bempty-ico">書</div><div class="bempty-txt">書庫空空如也<br>上傳 TXT 格式小說開始閱讀</div><label class="bempty-btn">＋ 上傳第一本書<input id="emptyImport" type="file" accept=".txt,text/plain" hidden></label></div>'}</section>
     </main>
     <button class="fab" id="fab" aria-label="上傳書籍">＋</button><input id="bookInput" type="file" accept=".txt,text/plain" hidden>`;
@@ -461,7 +485,10 @@ function panelTemplate() {
     const chapters = state.currentBook?.chapters || [];
     return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">📖 章節目錄</span><button class="pcls" id="panelX">×</button></div><div class="pbody">${chapters.map((ch, i) => `<div class="toc-item" data-chapter="${i}"><span class="toc-n">${i + 1}</span><span class="toc-t">${esc(ch.title)}</span><span class="toc-arr">›</span></div>`).join('') || '<div class="toc-empty">未偵測到章節標題</div>'}</div></div></div>`;
   }
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button><label class="font-opt import-font">匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">定時關閉</div><div class="slp-wrap"><button class="slp-bt">關閉</button><button class="slp-bt">5分</button><button class="slp-bt">10分</button><button class="slp-bt">15分</button><button class="slp-bt">30分</button></div></div><div class="sg"><button id="clearCaches">清除網頁快取</button></div></div></div></div>`;
+  const importedFonts = state.fonts.map(f => `<div class="font-row"><button class="font-opt ${state.fontFamily === `custom-${f.id}` ? 'on' : ''}" data-font="custom-${f.id}">${esc(f.name)}</button><button class="font-del" data-font-delete="${f.id}" aria-label="刪除字體">×</button></div>`).join('');
+  const sleepLeft = sleepMinutesLeft();
+  const sleepBtns = [0, 5, 10, 15, 30].map(min => `<button class="slp-bt ${(min === 0 && !sleepLeft) || (min > 0 && sleepLeft === min) ? 'on' : ''}" data-sleep="${min}">${min ? `${min}分` : '關閉'}</button>`).join('');
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -470,13 +497,6 @@ function renderPanel() {
   bindPanelEvents();
 }
 
-async function populateFontSelect() {
-  const select = $('#fontSelect');
-  if (!select) return;
-  const fonts = await DB.all('fonts');
-  for (const f of fonts) select.insertAdjacentHTML('beforeend', `<option value="custom-${f.id}">${esc(f.name)}</option>`);
-  select.value = state.fontFamily;
-}
 async function openBook(id) {
   state.currentBook = TxtParser.enrichBook(await DB.get('books', id));
   state.view = 'reader';
@@ -489,20 +509,19 @@ function bindPanelEvents() {
   $('#panelX')?.addEventListener('click', closePanel);
   $$('[data-chapter]').forEach(el => el.addEventListener('click', () => jumpChapter(Number(el.dataset.chapter))));
   $$('[data-font]').forEach(btn => btn.addEventListener('click', () => { state.fontFamily = btn.dataset.font; localStorage.setItem('fontFamily', state.fontFamily); closePanel(); repaginateKeepPosition(); }));
-  $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); closePanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
+  $$('[data-font-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('fonts', btn.dataset.fontDelete); if (state.fontFamily === `custom-${btn.dataset.fontDelete}`) { state.fontFamily = 'serif'; localStorage.setItem('fontFamily', state.fontFamily); } state.fonts = await DB.all('fonts'); renderPanel(); if (state.currentBook) repaginateKeepPosition(); toast('字體已刪除'); }));
+  $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
+  $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
   $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('.spd-val').textContent = `${Number(e.target.value).toFixed(1)}×`; });
   $('#clearCaches')?.addEventListener('click', async () => { await UpdateManager.disableServiceWorkerCache(); toast('已清除網頁快取'); });
 }
 function bindEvents() {
   $$('#themeBtn').forEach(btn => btn.addEventListener('click', () => { setTheme(state.theme === 'dark' ? 'light' : 'dark'); render(); }));
-  $('#refreshBtn')?.addEventListener('click', () => UpdateManager.forceNetworkReload());
-  $('#clearCaches')?.addEventListener('click', async () => { await UpdateManager.disableServiceWorkerCache(); toast('已清除網頁快取'); });
+  $('#refreshBtn')?.addEventListener('click', async () => { toast('清除快取並載入最新版…'); await UpdateManager.forceNetworkReload(); });
   $('#topImportBtn')?.addEventListener('click', () => $('#bookInput')?.click());
   $('#fab')?.addEventListener('click', () => $('#bookInput')?.click());
   $('#bookInput')?.addEventListener('change', e => [...e.target.files].forEach(importBook));
   $('#emptyImport')?.addEventListener('change', e => [...e.target.files].forEach(importBook));
-  $('#fontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); render(); toast('字體已匯入並套用'); } });
-  $('#fontSelect')?.addEventListener('change', e => { state.fontFamily = e.target.value; localStorage.setItem('fontFamily', state.fontFamily); });
   $$('[data-open]').forEach(row => row.addEventListener('click', e => { if (e.target.closest('[data-delete]')) return; openBook(row.dataset.open); }));
   $$('[data-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('books', btn.dataset.delete); state.books = (await DB.all('books')).map(TxtParser.enrichBook); render(); }));
   $('#backBtn')?.addEventListener('click', async () => { tts.stop(); state.books = (await DB.all('books')).map(TxtParser.enrichBook); state.view = 'library'; render(); });
@@ -522,7 +541,6 @@ async function render() {
   document.documentElement.dataset.theme = state.theme;
   $('#app').innerHTML = state.view === 'reader' ? readerTemplate() : libraryTemplate();
   bindEvents();
-  if (state.view === 'library') await populateFontSelect();
   if (state.view === 'reader') { renderPage(); renderPanel(); }
 }
 async function boot() {
@@ -530,7 +548,8 @@ async function boot() {
   await render();
   UpdateManager.disableServiceWorkerCache().catch(err => console.warn('cache cleanup skipped', err));
   try {
-    await FontManager.loadStoredFonts();
+    state.fonts = await FontManager.loadStoredFonts();
+    restoreSleepTimer();
     state.books = (await DB.all('books')).map(TxtParser.enrichBook);
     await render();
   } catch (err) {
