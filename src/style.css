@@ -56,20 +56,21 @@ button { border: 0; background: none; cursor: pointer; }
 .lbar-c { font-size: 10px; color: var(--tx3); }
 .mini-tools { display: flex; gap: 8px; padding: 4px 16px 9px; overflow-x: auto; }
 .mini-tools button, .mini-tools label, .mini-tools select { height: 32px; padding: 0 12px; border-radius: 16px; border: 1.5px solid var(--bd); background: var(--bg3); color: var(--tx2); font-size: 12px; font-weight: 700; white-space: nowrap; display: inline-flex; align-items: center; }
-.blist { display: flex; flex-direction: column; }
-.brow { display: flex; align-items: center; padding: 11px 16px; border-bottom: 1px solid var(--bd); gap: 12px; background: var(--bg); cursor: pointer; transition: background .12s; }
-.brow:active { background: var(--acp); }
-.brow-cov { width: 38px; height: 52px; border-radius: 2px 6px 6px 2px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: -2px 2px 8px var(--sh); position: relative; }
-.brow-cov::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 5px; background: linear-gradient(90deg, rgba(0,0,0,.32), transparent); }
-.brow-cov span { position: relative; z-index: 1; color: #fff; font-size: 8px; text-align: center; line-height: 1.3; padding: 2px; text-shadow: 0 1px 4px rgba(0,0,0,.6); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.brow-info { flex: 1; min-width: 0; }
-.brow-title { font-size: 15px; font-weight: 600; color: var(--tx); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
-.brow-meta { font-size: 11px; color: var(--tx3); display: flex; gap: 10px; margin-bottom: 5px; }
-.brow-prog-wrap { display: flex; align-items: center; gap: 8px; }
-.brow-prog { flex: 1; height: 3px; background: var(--bd); border-radius: 2px; overflow: hidden; }
-.brow-prog-f { height: 100%; background: linear-gradient(90deg, var(--ac), var(--ac2)); border-radius: 2px; }
-.brow-pct { font-size: 10px; color: var(--tx3); min-width: 28px; text-align: right; }
-.brow-del { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-size: 17px; color: var(--tx3); border: 1.5px solid var(--bd); background: transparent; flex-shrink: 0; }
+.blist { display: grid; gap: 14px; padding: 10px 16px 96px; }
+.brow { position: relative; display: grid; grid-template-columns: 58px 1fr; gap: 14px; align-items: center; padding: 14px; border: 1.5px solid var(--bd); border-radius: 18px; background: var(--bg2); box-shadow: 0 8px 22px var(--sh); cursor: pointer; transition: transform .12s, background .12s, box-shadow .12s; }
+.brow:active { background: var(--acp); transform: scale(.985); box-shadow: 0 4px 14px var(--sh); }
+.brow-cov { width: 58px; height: 78px; border-radius: 4px 10px 10px 4px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; box-shadow: -3px 4px 10px var(--sh); position: relative; }
+.brow-cov::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 6px; background: linear-gradient(90deg, rgba(0,0,0,.34), transparent); }
+.brow-cov span { position: relative; z-index: 1; color: #fff; font-size: 10px; text-align: center; line-height: 1.28; padding: 5px; text-shadow: 0 1px 4px rgba(0,0,0,.6); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.brow-info { flex: 1; min-width: 0; position: relative; padding-right: 38px; }
+.brow-title { font-size: 17px; font-weight: 800; color: var(--tx); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; padding-right: 2px; }
+.brow-meta { font-size: 12px; color: var(--tx3); display: flex; gap: 10px; margin-bottom: 8px; font-family: var(--font-system); }
+.brow-prog-wrap { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.brow-prog { flex: 1; height: 4px; background: var(--bd); border-radius: 3px; overflow: hidden; }
+.brow-prog-f { height: 100%; background: linear-gradient(90deg, var(--ac), var(--ac2)); border-radius: 3px; }
+.brow-pct { font-size: 10px; color: var(--tx3); min-width: 28px; text-align: right; font-family: var(--font-system); }
+.brow-pill { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: var(--bg3); color: var(--ac); font-size: 12px; font-weight: 800; font-family: var(--font-system); }
+.brow-del { position: absolute; right: 0; top: 0; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-size: 17px; color: var(--tx3); border: 1.5px solid var(--bd); background: var(--bg2); flex-shrink: 0; }
 .brow-del:active { background: #b83226; color: #fff; border-color: #b83226; }
 .bempty { padding: 52px 24px; text-align: center; }
 .bempty-ico { font-size: 42px; margin-bottom: 12px; opacity: .42; color: var(--ac); }

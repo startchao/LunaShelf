@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.2.2-20260701';
+const APP_VERSION = '0.2.3-20260701';
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
 
@@ -467,7 +467,7 @@ function libraryTemplate() {
 }
 function bookRow(book) {
   const pct = bookProgress(book);
-  return `<article class="brow" data-open="${book.id}"><div class="brow-cov" style="background:${bookCoverColor(book.title)}"><span>${esc(book.title)}</span></div><div class="brow-info"><div class="brow-title">${esc(book.title)}</div><div class="brow-meta"><span>${book.chapters?.length || 1} 章</span><span>${book.paragraphs?.length || 0} 段</span></div><div class="brow-prog-wrap"><div class="brow-prog"><div class="brow-prog-f" style="width:${pct}%"></div></div><span class="brow-pct">${pct}%</span></div></div><button class="brow-del" data-delete="${book.id}" aria-label="刪除">×</button></article>`;
+  return `<article class="brow" data-open="${book.id}"><div class="brow-cov" style="background:${bookCoverColor(book.title)}"><span>${esc(book.title)}</span></div><div class="brow-info"><button class="brow-del" data-delete="${book.id}" aria-label="刪除">×</button><div class="brow-title">${esc(book.title)}</div><div class="brow-meta"><span>${book.chapters?.length || 1} 章</span><span>${book.paragraphs?.length || 0} 段</span></div><div class="brow-prog-wrap"><div class="brow-prog"><div class="brow-prog-f" style="width:${pct}%"></div></div><span class="brow-pct">${pct}%</span></div><span class="brow-pill">繼續閱讀 ${pct}%</span></div></article>`;
 }
 function readerTemplate() {
   const book = state.currentBook;
