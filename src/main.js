@@ -1,6 +1,12 @@
 import './style.css';
 
-const APP_VERSION = '0.2.8-treader-layout-20260701';
+const APP_VERSION = '0.2.9-treader-layout-20260701';
+const LAYOUT_PRESET_VERSION = 'treader-20260701';
+if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
+  localStorage.setItem('fontSize', '18');
+  localStorage.setItem('lineHeight', '1.3');
+  localStorage.setItem('layoutPresetVersion', LAYOUT_PRESET_VERSION);
+}
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
 
