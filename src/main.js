@@ -1,7 +1,7 @@
 import './style.css';
 
-const APP_VERSION = '0.3.2-performance-hotfix-20260701';
-const LAYOUT_PRESET_VERSION = 'performance-hotfix-20260701';
+const APP_VERSION = '0.3.1-reading-presets-wakelock-20260701';
+const LAYOUT_PRESET_VERSION = 'reading-presets-wakelock-20260701';
 const READING_PRESETS = {
   compact: { label: '緊湊', fontSize: 18, lineHeight: 1.2, paragraphSpacing: 0.2, marginMode: 'narrow' },
   standard: { label: '標準', fontSize: 18, lineHeight: 1.3, paragraphSpacing: 0.5, marginMode: 'standard' },
@@ -15,7 +15,6 @@ if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('paragraphSpacing', '0.5');
   localStorage.setItem('marginMode', 'standard');
   localStorage.setItem('readingPreset', 'standard');
-  localStorage.setItem('keepAwake', 'false');
   localStorage.setItem('layoutPresetVersion', LAYOUT_PRESET_VERSION);
 }
 const DB_NAME = 'lunashelf-db';
@@ -37,7 +36,7 @@ const state = {
   paragraphSpacing: Number(localStorage.getItem('paragraphSpacing') || 0.5),
   marginMode: localStorage.getItem('marginMode') || 'standard',
   readingPreset: localStorage.getItem('readingPreset') || 'standard',
-  keepAwake: localStorage.getItem('keepAwake') === 'true',
+  keepAwake: localStorage.getItem('keepAwake') !== 'false',
   wakeLockStatus: 'idle',
   view: 'library',
   toolbarOn: false,
@@ -384,19 +383,17 @@ function setCustomLayout() {
 function adjustLayoutValue(key, delta, min, max, decimals = 1) {
   state[key] = Number(Math.min(max, Math.max(min, state[key] + delta)).toFixed(decimals));
   setCustomLayout();
+  saveLayoutSettings();
+  if (state.currentBook) repaginateKeepPosition();
   renderPanel();
 }
 function setMarginMode(mode) {
   if (!MARGIN_LABELS[mode]) return;
   state.marginMode = mode;
   setCustomLayout();
-  renderPanel();
-}
-function applyLayoutChanges() {
   saveLayoutSettings();
   if (state.currentBook) repaginateKeepPosition();
   renderPanel();
-  toast('排版已套用');
 }
 function wakeLockLabel() {
   const labels = { active: '已啟用', idle: '待命', off: '關閉', unsupported: '瀏覽器不支援', released: '已被系統釋放', background: '背景中暫停', error: '啟用失敗' };
@@ -640,7 +637,7 @@ function panelTemplate() {
   const presetBtns = Object.entries(READING_PRESETS).map(([key, preset]) => `<button class="slp-bt ${state.readingPreset === key ? 'on' : ''}" data-preset="${key}">${preset.label}</button>`).join('') + `<button class="slp-bt ${state.readingPreset === 'custom' ? 'on' : ''}" data-preset="custom">自訂</button>`;
   const marginBtns = Object.entries(MARGIN_LABELS).map(([key, label]) => `<button class="slp-bt ${state.marginMode === key ? 'on' : ''}" data-margin="${key}">${label}</button>`).join('');
   const keepAwakeStatus = wakeLockLabel();
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">閱讀模板</div><div class="slp-wrap">${presetBtns}</div><div class="sg-hint">套用模板後仍可自由微調，微調後會自動切到自訂。</div></div><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="step-row"><span>字級</span><button data-step="fontSize:-2">A−</button><b>${state.fontSize}px</b><button data-step="fontSize:2">A+</button></div><div class="step-row"><span>行高</span><button data-step="lineHeight:-0.1">−</button><b>${lineHeight}×</b><button data-step="lineHeight:0.1">＋</button></div><div class="step-row"><span>段距</span><button data-step="paragraphSpacing:-0.1">−</button><b>${paragraphSpacing}行</b><button data-step="paragraphSpacing:0.1">＋</button></div><div class="sg-lbl sub">邊距</div><div class="slp-wrap">${marginBtns}</div><button class="apply-layout" id="applyLayoutBtn">套用排版</button><div class="sg-hint">為了避免長篇小說卡頓，＋／－ 調整後按「套用排版」才會重新分頁。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">螢幕長亮</div><button class="wake-toggle ${state.keepAwake ? 'on' : ''}" id="keepAwakeToggle">${state.keepAwake ? '聽書時保持螢幕長亮：開' : '聽書時保持螢幕長亮：關'}</button><div class="sg-hint">狀態：${keepAwakeStatus}。iOS 若切到背景、低電量或手動鎖定，系統仍可能釋放。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">閱讀模板</div><div class="slp-wrap">${presetBtns}</div><div class="sg-hint">套用模板後仍可自由微調，微調後會自動切到自訂。</div></div><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="step-row"><span>字級</span><button data-step="fontSize:-2">A−</button><b>${state.fontSize}px</b><button data-step="fontSize:2">A+</button></div><div class="step-row"><span>行高</span><button data-step="lineHeight:-0.1">−</button><b>${lineHeight}×</b><button data-step="lineHeight:0.1">＋</button></div><div class="step-row"><span>段距</span><button data-step="paragraphSpacing:-0.1">−</button><b>${paragraphSpacing}行</b><button data-step="paragraphSpacing:0.1">＋</button></div><div class="sg-lbl sub">邊距</div><div class="slp-wrap">${marginBtns}</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">螢幕長亮</div><button class="wake-toggle ${state.keepAwake ? 'on' : ''}" id="keepAwakeToggle">${state.keepAwake ? '聽書時保持螢幕長亮：開' : '聽書時保持螢幕長亮：關'}</button><div class="sg-hint">狀態：${keepAwakeStatus}。iOS 若切到背景、低電量或手動鎖定，系統仍可能釋放。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -679,7 +676,6 @@ function bindPanelEvents() {
     if (key === 'paragraphSpacing') adjustLayoutValue('paragraphSpacing', delta, 0, 2, 1);
   }));
   $$('[data-margin]').forEach(btn => btn.addEventListener('click', () => setMarginMode(btn.dataset.margin)));
-  $('#applyLayoutBtn')?.addEventListener('click', applyLayoutChanges);
   $('#keepAwakeToggle')?.addEventListener('click', async () => {
     state.keepAwake = !state.keepAwake;
     localStorage.setItem('keepAwake', String(state.keepAwake));
@@ -706,8 +702,8 @@ function bindEvents() {
   $('#setBtn')?.addEventListener('click', () => openPanel('settings'));
   $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());
   $('#rfStop')?.addEventListener('click', () => tts.stop());
-  $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); setCustomLayout(); saveLayoutSettings(); repaginateKeepPosition(); });
-  $('#fontPlus')?.addEventListener('click', () => { state.fontSize = Math.min(34, state.fontSize + 2); setCustomLayout(); saveLayoutSettings(); repaginateKeepPosition(); });
+  $('#fontMinus')?.addEventListener('click', () => adjustLayoutValue('fontSize', -2, 16, 34, 0));
+  $('#fontPlus')?.addEventListener('click', () => adjustLayoutValue('fontSize', 2, 16, 34, 0));
   $('#rfProg')?.addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); state.currentPage = Math.round(((e.clientX - r.left) / r.width) * (state.pages.length - 1)); renderPage(); });
 }
 
@@ -732,13 +728,6 @@ async function boot() {
     toast('本機儲存暫時不可用，仍可先檢視介面');
   }
 }
-let resizeTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    applyReaderLayoutVars();
-    if (state.view === 'reader' && state.currentBook) repaginateKeepPosition();
-  }, 450);
-});
+window.addEventListener('resize', () => { applyReaderLayoutVars(); if (state.view === 'reader' && state.currentBook) repaginateKeepPosition(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') wakeLock.restoreIfNeeded().catch(() => {}); });
 boot().catch(err => { console.error(err); toast(`啟動失敗：${err.message}`); });
