@@ -1,11 +1,20 @@
 import './style.css';
 
-const APP_VERSION = '0.3.0-reader-spacing-controls-20260701';
-const LAYOUT_PRESET_VERSION = 'treader-controls-20260701';
+const APP_VERSION = '0.3.1-reading-presets-wakelock-20260701';
+const LAYOUT_PRESET_VERSION = 'reading-presets-wakelock-20260701';
+const READING_PRESETS = {
+  compact: { label: '緊湊', fontSize: 18, lineHeight: 1.2, paragraphSpacing: 0.2, marginMode: 'narrow' },
+  standard: { label: '標準', fontSize: 18, lineHeight: 1.3, paragraphSpacing: 0.5, marginMode: 'standard' },
+  comfortable: { label: '舒適', fontSize: 20, lineHeight: 1.6, paragraphSpacing: 0.8, marginMode: 'wide' },
+  large: { label: '大字', fontSize: 24, lineHeight: 1.6, paragraphSpacing: 0.8, marginMode: 'standard' },
+};
+const MARGIN_LABELS = { narrow: '窄', standard: '標準', wide: '寬' };
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
   localStorage.setItem('lineHeight', '1.3');
   localStorage.setItem('paragraphSpacing', '0.5');
+  localStorage.setItem('marginMode', 'standard');
+  localStorage.setItem('readingPreset', 'standard');
   localStorage.setItem('layoutPresetVersion', LAYOUT_PRESET_VERSION);
 }
 const DB_NAME = 'lunashelf-db';
@@ -25,6 +34,10 @@ const state = {
   fontSize: Number(localStorage.getItem('fontSize') || 18),
   lineHeight: Number(localStorage.getItem('lineHeight') || 1.3),
   paragraphSpacing: Number(localStorage.getItem('paragraphSpacing') || 0.5),
+  marginMode: localStorage.getItem('marginMode') || 'standard',
+  readingPreset: localStorage.getItem('readingPreset') || 'standard',
+  keepAwake: localStorage.getItem('keepAwake') !== 'false',
+  wakeLockStatus: 'idle',
   view: 'library',
   toolbarOn: false,
   panel: null,
@@ -139,6 +152,41 @@ class TxtParser {
   }
 }
 
+class WakeLockManager {
+  constructor() { this.sentinel = null; }
+  isSupported() { return 'wakeLock' in navigator && typeof navigator.wakeLock?.request === 'function'; }
+  async request() {
+    if (!state.keepAwake) { state.wakeLockStatus = 'off'; return false; }
+    if (!this.isSupported()) { state.wakeLockStatus = 'unsupported'; return false; }
+    if (document.visibilityState !== 'visible') { state.wakeLockStatus = 'background'; return false; }
+    try {
+      if (!this.sentinel || this.sentinel.released) {
+        this.sentinel = await navigator.wakeLock.request('screen');
+        this.sentinel.addEventListener('release', () => { state.wakeLockStatus = state.keepAwake ? 'released' : 'off'; renderPanel(); });
+      }
+      state.wakeLockStatus = 'active';
+      renderPanel();
+      return true;
+    } catch (err) {
+      console.warn('wake lock unavailable', err);
+      state.wakeLockStatus = 'error';
+      renderPanel();
+      return false;
+    }
+  }
+  async release() {
+    try { if (this.sentinel && !this.sentinel.released) await this.sentinel.release(); } catch (_) { /* ignore */ }
+    this.sentinel = null;
+    state.wakeLockStatus = state.keepAwake ? 'idle' : 'off';
+    renderPanel();
+  }
+  async restoreIfNeeded() {
+    if (tts?.state === 'playing') await this.request();
+  }
+}
+
+const wakeLock = new WakeLockManager();
+
 class AudioSessionManager {
   constructor() { this.audio = null; this.objectUrl = null; }
   makeSilentWavUrl() {
@@ -242,6 +290,7 @@ class SpeechQueue {
     this.currentUtterance = null;
     this.speakNext();
     this.audioSession.start(state.currentBook).catch(err => console.warn('Audio session start blocked', err));
+    wakeLock.request().catch(err => console.warn('wake lock request failed', err));
     renderTtsState();
     clearTimeout(this.startWatchdog);
     this.startWatchdog = setTimeout(() => {
@@ -261,8 +310,8 @@ class SpeechQueue {
     this.currentUtterance = this.makeUtterance(seg.text, seg.paraIdx);
     speechSynthesis.speak(this.currentUtterance);
   }
-  pause() { this.state = 'paused'; this.audioSession.stop(); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
-  stop() { this.state = 'idle'; this.audioSession.stop(); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
+  pause() { this.state = 'paused'; this.audioSession.stop(); wakeLock.release().catch(() => {}); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
+  stop() { this.state = 'idle'; this.audioSession.stop(); wakeLock.release().catch(() => {}); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
 }
 
 const tts = new SpeechQueue();
@@ -286,6 +335,69 @@ function getFontCss() {
 }
 function getParagraphGapEm() {
   return `${Math.max(0, state.paragraphSpacing) * Math.max(1, state.lineHeight)}em`;
+}
+function getMarginPixels() {
+  const w = window.innerWidth;
+  const h = window.visualViewport?.height || window.innerHeight;
+  const configs = {
+    narrow: { x: 12, y: 16, vw: 0.025, vh: 0.025 },
+    standard: { x: 15, y: 20, vw: 0.03, vh: 0.03 },
+    wide: { x: 24, y: 30, vw: 0.045, vh: 0.04 },
+  };
+  const cfg = configs[state.marginMode] || configs.standard;
+  return {
+    x: w >= 500 ? Math.max(cfg.x, w * cfg.vw) : cfg.x,
+    y: h >= 667 ? Math.max(cfg.y, h * cfg.vh) : cfg.y,
+  };
+}
+function applyReaderLayoutVars() {
+  const margin = getMarginPixels();
+  document.documentElement.style.setProperty('--page-margin-x', `${margin.x}px`);
+  document.documentElement.style.setProperty('--page-margin-y', `${margin.y}px`);
+  document.documentElement.dataset.margin = state.marginMode;
+}
+function saveLayoutSettings() {
+  localStorage.setItem('fontSize', String(state.fontSize));
+  localStorage.setItem('lineHeight', String(state.lineHeight));
+  localStorage.setItem('paragraphSpacing', String(state.paragraphSpacing));
+  localStorage.setItem('marginMode', state.marginMode);
+  localStorage.setItem('readingPreset', state.readingPreset);
+  applyReaderLayoutVars();
+}
+function applyReadingPreset(name) {
+  const preset = READING_PRESETS[name];
+  if (!preset) return;
+  state.readingPreset = name;
+  state.fontSize = preset.fontSize;
+  state.lineHeight = preset.lineHeight;
+  state.paragraphSpacing = preset.paragraphSpacing;
+  state.marginMode = preset.marginMode;
+  saveLayoutSettings();
+  if (state.currentBook) repaginateKeepPosition();
+  renderPanel();
+}
+function setCustomLayout() {
+  state.readingPreset = 'custom';
+  localStorage.setItem('readingPreset', state.readingPreset);
+}
+function adjustLayoutValue(key, delta, min, max, decimals = 1) {
+  state[key] = Number(Math.min(max, Math.max(min, state[key] + delta)).toFixed(decimals));
+  setCustomLayout();
+  saveLayoutSettings();
+  if (state.currentBook) repaginateKeepPosition();
+  renderPanel();
+}
+function setMarginMode(mode) {
+  if (!MARGIN_LABELS[mode]) return;
+  state.marginMode = mode;
+  setCustomLayout();
+  saveLayoutSettings();
+  if (state.currentBook) repaginateKeepPosition();
+  renderPanel();
+}
+function wakeLockLabel() {
+  const labels = { active: '已啟用', idle: '待命', off: '關閉', unsupported: '瀏覽器不支援', released: '已被系統釋放', background: '背景中暫停', error: '啟用失敗' };
+  return labels[state.wakeLockStatus] || '待命';
 }
 function bookProgress(book) {
   const total = book.paragraphs?.length || 1;
@@ -336,8 +448,7 @@ function getReaderLayoutMetrics() {
   const viewportW = window.innerWidth;
   const viewportH = window.visualViewport?.height || window.innerHeight;
   const safe = readSafeAreaInsets();
-  const marginX = viewportW >= 500 ? viewportW * 0.03 : 15;
-  const marginY = viewportH >= 667 ? viewportH * 0.03 : 20;
+  const { x: marginX, y: marginY } = getMarginPixels();
   const bodyTop = Math.max(marginY, safe.top);
   const bodyBottom = Math.max(marginY, safe.bottom) + 20;
   return { viewportW, viewportH, marginX, marginY, bodyTop, bodyBottom };
@@ -523,7 +634,10 @@ function panelTemplate() {
   const lineHeight = state.lineHeight.toFixed(1);
   const paragraphSpacing = state.paragraphSpacing.toFixed(1);
   const sleepBtns = [0, 5, 10, 15, 30].map(min => `<button class="slp-bt ${(min === 0 && !sleepLeft) || (min > 0 && sleepLeft === min) ? 'on' : ''}" data-sleep="${min}">${min ? `${min}分` : '關閉'}</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  const presetBtns = Object.entries(READING_PRESETS).map(([key, preset]) => `<button class="slp-bt ${state.readingPreset === key ? 'on' : ''}" data-preset="${key}">${preset.label}</button>`).join('') + `<button class="slp-bt ${state.readingPreset === 'custom' ? 'on' : ''}" data-preset="custom">自訂</button>`;
+  const marginBtns = Object.entries(MARGIN_LABELS).map(([key, label]) => `<button class="slp-bt ${state.marginMode === key ? 'on' : ''}" data-margin="${key}">${label}</button>`).join('');
+  const keepAwakeStatus = wakeLockLabel();
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">閱讀模板</div><div class="slp-wrap">${presetBtns}</div><div class="sg-hint">套用模板後仍可自由微調，微調後會自動切到自訂。</div></div><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="step-row"><span>字級</span><button data-step="fontSize:-2">A−</button><b>${state.fontSize}px</b><button data-step="fontSize:2">A+</button></div><div class="step-row"><span>行高</span><button data-step="lineHeight:-0.1">−</button><b>${lineHeight}×</b><button data-step="lineHeight:0.1">＋</button></div><div class="step-row"><span>段距</span><button data-step="paragraphSpacing:-0.1">−</button><b>${paragraphSpacing}行</b><button data-step="paragraphSpacing:0.1">＋</button></div><div class="sg-lbl sub">邊距</div><div class="slp-wrap">${marginBtns}</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">螢幕長亮</div><button class="wake-toggle ${state.keepAwake ? 'on' : ''}" id="keepAwakeToggle">${state.keepAwake ? '聽書時保持螢幕長亮：開' : '聽書時保持螢幕長亮：關'}</button><div class="sg-hint">狀態：${keepAwakeStatus}。iOS 若切到背景、低電量或手動鎖定，系統仍可能釋放。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -553,17 +667,21 @@ function bindPanelEvents() {
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
   $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
-  $('#lineHeight')?.addEventListener('input', e => {
-    state.lineHeight = Number(e.target.value);
-    localStorage.setItem('lineHeight', String(state.lineHeight));
-    $('#lineHeightVal') && ($('#lineHeightVal').textContent = `${state.lineHeight.toFixed(1)}×`);
-    if (state.currentBook) repaginateKeepPosition();
-  });
-  $('#paragraphSpacing')?.addEventListener('input', e => {
-    state.paragraphSpacing = Number(e.target.value);
-    localStorage.setItem('paragraphSpacing', String(state.paragraphSpacing));
-    $('#paragraphSpacingVal') && ($('#paragraphSpacingVal').textContent = `${state.paragraphSpacing.toFixed(1)}行`);
-    if (state.currentBook) repaginateKeepPosition();
+  $$('[data-preset]').forEach(btn => btn.addEventListener('click', () => { if (btn.dataset.preset !== 'custom') applyReadingPreset(btn.dataset.preset); else { setCustomLayout(); renderPanel(); } }));
+  $$('[data-step]').forEach(btn => btn.addEventListener('click', () => {
+    const [key, rawDelta] = btn.dataset.step.split(':');
+    const delta = Number(rawDelta);
+    if (key === 'fontSize') adjustLayoutValue('fontSize', delta, 16, 34, 0);
+    if (key === 'lineHeight') adjustLayoutValue('lineHeight', delta, 1, 2.5, 1);
+    if (key === 'paragraphSpacing') adjustLayoutValue('paragraphSpacing', delta, 0, 2, 1);
+  }));
+  $$('[data-margin]').forEach(btn => btn.addEventListener('click', () => setMarginMode(btn.dataset.margin)));
+  $('#keepAwakeToggle')?.addEventListener('click', async () => {
+    state.keepAwake = !state.keepAwake;
+    localStorage.setItem('keepAwake', String(state.keepAwake));
+    if (state.keepAwake && tts.state === 'playing') await wakeLock.request();
+    else await wakeLock.release();
+    renderPanel();
   });
   $('#clearCaches')?.addEventListener('click', async () => { await UpdateManager.disableServiceWorkerCache(); toast('已清除網頁快取'); });
 }
@@ -584,13 +702,14 @@ function bindEvents() {
   $('#setBtn')?.addEventListener('click', () => openPanel('settings'));
   $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());
   $('#rfStop')?.addEventListener('click', () => tts.stop());
-  $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); localStorage.setItem('fontSize', state.fontSize); repaginateKeepPosition(); });
-  $('#fontPlus')?.addEventListener('click', () => { state.fontSize = Math.min(34, state.fontSize + 2); localStorage.setItem('fontSize', state.fontSize); repaginateKeepPosition(); });
+  $('#fontMinus')?.addEventListener('click', () => adjustLayoutValue('fontSize', -2, 16, 34, 0));
+  $('#fontPlus')?.addEventListener('click', () => adjustLayoutValue('fontSize', 2, 16, 34, 0));
   $('#rfProg')?.addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); state.currentPage = Math.round(((e.clientX - r.left) / r.width) * (state.pages.length - 1)); renderPage(); });
 }
 
 async function render() {
   document.documentElement.dataset.theme = state.theme;
+  applyReaderLayoutVars();
   $('#app').innerHTML = state.view === 'reader' ? readerTemplate() : libraryTemplate();
   bindEvents();
   if (state.view === 'reader') { renderPage(); renderPanel(); }
@@ -609,5 +728,6 @@ async function boot() {
     toast('本機儲存暫時不可用，仍可先檢視介面');
   }
 }
-window.addEventListener('resize', () => { if (state.view === 'reader' && state.currentBook) repaginateKeepPosition(); });
+window.addEventListener('resize', () => { applyReaderLayoutVars(); if (state.view === 'reader' && state.currentBook) repaginateKeepPosition(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') wakeLock.restoreIfNeeded().catch(() => {}); });
 boot().catch(err => { console.error(err); toast(`啟動失敗：${err.message}`); });

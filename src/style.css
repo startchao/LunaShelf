@@ -145,7 +145,13 @@ button { border: 0; background: none; cursor: pointer; }
 .spd-val { font-size: 16px; font-weight: 800; color: var(--ac); min-width: 44px; text-align: right; }
 .slp-wrap { display: flex; gap: 6px; flex-wrap: wrap; }
 .slp-bt, .sg button { min-width: 54px; height: 34px; border-radius: 9px; border: 1.5px solid var(--bd2); background: var(--panelbg2); color: var(--tx2); font-size: 13px; font-weight: 700; }
-.slp-bt.on { background: var(--ac); color: #fff; border-color: var(--ac); }
+.slp-bt.on, .wake-toggle.on { background: var(--ac); color: #fff; border-color: var(--ac); }
+.step-row { display: grid; grid-template-columns: 52px 44px 1fr 44px; align-items: center; gap: 8px; margin: 8px 0; }
+.step-row span { color: var(--tx3); font-size: 12px; font-weight: 800; }
+.step-row b { text-align: center; color: var(--ac); font-size: 15px; }
+.step-row button { min-width: 44px; height: 36px; font-size: 18px; }
+.sg-lbl.sub { margin-top: 12px; }
+.wake-toggle { width: 100%; min-height: 40px; }
 .sg-hint { padding: 6px 2px; color: var(--tx3); font-size: 12px; }
 
 .page-probe { position: fixed; left: -9999px; top: 0; overflow: hidden; visibility: hidden; padding: 0; --para-gap: .65em; }
