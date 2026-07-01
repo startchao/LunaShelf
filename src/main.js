@@ -1,10 +1,11 @@
 import './style.css';
 
-const APP_VERSION = '0.2.9-treader-layout-20260701';
-const LAYOUT_PRESET_VERSION = 'treader-20260701';
+const APP_VERSION = '0.3.0-reader-spacing-controls-20260701';
+const LAYOUT_PRESET_VERSION = 'treader-controls-20260701';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
   localStorage.setItem('lineHeight', '1.3');
+  localStorage.setItem('paragraphSpacing', '0.5');
   localStorage.setItem('layoutPresetVersion', LAYOUT_PRESET_VERSION);
 }
 const DB_NAME = 'lunashelf-db';
@@ -23,6 +24,7 @@ const state = {
   fontFamily: localStorage.getItem('fontFamily') || 'serif',
   fontSize: Number(localStorage.getItem('fontSize') || 18),
   lineHeight: Number(localStorage.getItem('lineHeight') || 1.3),
+  paragraphSpacing: Number(localStorage.getItem('paragraphSpacing') || 0.5),
   view: 'library',
   toolbarOn: false,
   panel: null,
@@ -282,6 +284,9 @@ function getFontCss() {
   if (state.fontFamily === 'serif') return 'var(--font-serif)';
   return `'${state.fontFamily}'`;
 }
+function getParagraphGapEm() {
+  return `${Math.max(0, state.paragraphSpacing) * Math.max(1, state.lineHeight)}em`;
+}
 function bookProgress(book) {
   const total = book.paragraphs?.length || 1;
   return Math.round(((book.progressPara || 0) / Math.max(1, total - 1)) * 100);
@@ -349,6 +354,7 @@ function paginate(goToPara = 0) {
   probe.style.fontSize = `${state.fontSize}px`;
   probe.style.lineHeight = String(state.lineHeight);
   probe.style.fontFamily = getFontCss();
+  probe.style.setProperty('--para-gap', getParagraphGapEm());
   document.body.appendChild(probe);
   const pages = [];
   let cursor = 0;
@@ -392,6 +398,7 @@ function renderPage() {
   body.style.fontSize = `${state.fontSize}px`;
   body.style.lineHeight = String(state.lineHeight);
   body.style.fontFamily = getFontCss();
+  body.style.setProperty('--para-gap', getParagraphGapEm());
   body.innerHTML = '';
   for (let i = page.startPara; i <= page.endPara && i < state.currentBook.paragraphs.length; i++) {
     const p = document.createElement('p');
@@ -508,18 +515,26 @@ function panelTemplate() {
   if (!state.panel) return '';
   if (state.panel === 'toc') {
     const chapters = state.currentBook?.chapters || [];
-    return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">📖 章節目錄</span><button class="pcls" id="panelX">×</button></div><div class="pbody">${chapters.map((ch, i) => `<div class="toc-item" data-chapter="${i}"><span class="toc-n">${i + 1}</span><span class="toc-t">${esc(ch.title)}</span><span class="toc-arr">›</span></div>`).join('') || '<div class="toc-empty">未偵測到章節標題</div>'}</div></div></div>`;
+    const currentChapter = state.pages[state.currentPage]?.chapterIdx ?? getChapterIndex(state.currentBook?.progressPara || 0);
+    return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">📖 章節目錄</span><button class="pcls" id="panelX">×</button></div><div class="pbody">${chapters.map((ch, i) => `<div class="toc-item ${i === currentChapter ? 'current' : ''}" data-chapter="${i}" ${i === currentChapter ? 'data-current-chapter="1"' : ''}><span class="toc-n">${i + 1}</span><span class="toc-t">${esc(ch.title)}</span><span class="toc-arr">›</span></div>`).join('') || '<div class="toc-empty">未偵測到章節標題</div>'}</div></div></div>`;
   }
   const importedFonts = state.fonts.map(f => `<div class="font-row"><button class="font-opt ${state.fontFamily === `custom-${f.id}` ? 'on' : ''}" data-font="custom-${f.id}">${esc(f.name)}</button><button class="font-del" data-font-delete="${f.id}" aria-label="刪除字體">×</button></div>`).join('');
   const sleepLeft = sleepMinutesLeft();
+  const lineHeight = state.lineHeight.toFixed(1);
+  const paragraphSpacing = state.paragraphSpacing.toFixed(1);
   const sleepBtns = [0, 5, 10, 15, 30].map(min => `<button class="slp-bt ${(min === 0 && !sleepLeft) || (min > 0 && sleepLeft === min) ? 'on' : ''}" data-sleep="${min}">${min ? `${min}分` : '關閉'}</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
   if (!root) return;
   root.innerHTML = panelTemplate();
   bindPanelEvents();
+  if (state.panel === 'toc') {
+    requestAnimationFrame(() => {
+      $('[data-current-chapter="1"]')?.scrollIntoView({ block: 'center', behavior: 'auto' });
+    });
+  }
 }
 
 async function openBook(id) {
@@ -537,7 +552,19 @@ function bindPanelEvents() {
   $$('[data-font-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('fonts', btn.dataset.fontDelete); if (state.fontFamily === `custom-${btn.dataset.fontDelete}`) { state.fontFamily = 'serif'; localStorage.setItem('fontFamily', state.fontFamily); } state.fonts = await DB.all('fonts'); renderPanel(); if (state.currentBook) repaginateKeepPosition(); toast('字體已刪除'); }));
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
-  $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('.spd-val').textContent = `${Number(e.target.value).toFixed(1)}×`; });
+  $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
+  $('#lineHeight')?.addEventListener('input', e => {
+    state.lineHeight = Number(e.target.value);
+    localStorage.setItem('lineHeight', String(state.lineHeight));
+    $('#lineHeightVal') && ($('#lineHeightVal').textContent = `${state.lineHeight.toFixed(1)}×`);
+    if (state.currentBook) repaginateKeepPosition();
+  });
+  $('#paragraphSpacing')?.addEventListener('input', e => {
+    state.paragraphSpacing = Number(e.target.value);
+    localStorage.setItem('paragraphSpacing', String(state.paragraphSpacing));
+    $('#paragraphSpacingVal') && ($('#paragraphSpacingVal').textContent = `${state.paragraphSpacing.toFixed(1)}行`);
+    if (state.currentBook) repaginateKeepPosition();
+  });
   $('#clearCaches')?.addEventListener('click', async () => { await UpdateManager.disableServiceWorkerCache(); toast('已清除網頁快取'); });
 }
 function bindEvents() {
