@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.2.5-20260701';
+const APP_VERSION = '0.2.6-20260701';
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
 
@@ -316,9 +316,9 @@ function paginate(goToPara = 0) {
   const probe = document.createElement('div');
   probe.className = 'page-probe';
   const topPad = 30;
-  const bottomPad = 56;
+  const bottomPad = 96;
   probe.style.width = `${Math.max(240, window.innerWidth - 52)}px`;
-  probe.style.height = `${Math.max(260, (window.visualViewport?.height || window.innerHeight) - topPad - bottomPad - 22)}px`;
+  probe.style.height = `${Math.max(220, (window.visualViewport?.height || window.innerHeight) - topPad - bottomPad - 34)}px`;
   probe.style.fontSize = `${state.fontSize}px`;
   probe.style.lineHeight = String(state.lineHeight);
   probe.style.fontFamily = getFontCss();
@@ -361,7 +361,6 @@ function renderPage() {
   const title = $('.rtitle');
   if (!body || !state.currentBook) return;
   const page = state.pages[state.currentPage] || state.pages[0];
-  const chapter = state.currentBook.chapters?.[page.chapterIdx];
   title && (title.textContent = state.currentBook.title);
   body.style.fontSize = `${state.fontSize}px`;
   body.style.lineHeight = String(state.lineHeight);
@@ -374,7 +373,6 @@ function renderPage() {
     p.textContent = state.currentBook.paragraphs[i];
     body.appendChild(p);
   }
-  if (chapter && page.startPara === chapter.idx) body.insertAdjacentHTML('afterbegin', `<h2 class="chapter-title">${esc(chapter.title)}</h2>`);
   const total = state.pages.length || 1;
   const percent = total > 1 ? Math.round((state.currentPage / (total - 1)) * 100) : 0;
   foot && (foot.textContent = `${state.currentPage + 1} / ${total}`);
