@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.2.7-20260701';
+const APP_VERSION = '0.2.8-treader-layout-20260701';
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
 
@@ -15,8 +15,8 @@ const state = {
   currentBook: null,
   theme: localStorage.getItem('theme') || 'light',
   fontFamily: localStorage.getItem('fontFamily') || 'serif',
-  fontSize: Number(localStorage.getItem('fontSize') || 24),
-  lineHeight: Number(localStorage.getItem('lineHeight') || 2),
+  fontSize: Number(localStorage.getItem('fontSize') || 18),
+  lineHeight: Number(localStorage.getItem('lineHeight') || 1.3),
   view: 'library',
   toolbarOn: false,
   panel: null,
@@ -310,15 +310,36 @@ function getChapterIndex(paraIdx) {
   return ci;
 }
 
+function readSafeAreaInsets() {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);';
+  document.body.appendChild(probe);
+  const style = getComputedStyle(probe);
+  const top = parseFloat(style.paddingTop) || 0;
+  const bottom = parseFloat(style.paddingBottom) || 0;
+  probe.remove();
+  return { top, bottom };
+}
+
+function getReaderLayoutMetrics() {
+  const viewportW = window.innerWidth;
+  const viewportH = window.visualViewport?.height || window.innerHeight;
+  const safe = readSafeAreaInsets();
+  const marginX = viewportW >= 500 ? viewportW * 0.03 : 15;
+  const marginY = viewportH >= 667 ? viewportH * 0.03 : 20;
+  const bodyTop = Math.max(marginY, safe.top);
+  const bodyBottom = Math.max(marginY, safe.bottom) + 20;
+  return { viewportW, viewportH, marginX, marginY, bodyTop, bodyBottom };
+}
+
 function paginate(goToPara = 0) {
   const book = state.currentBook;
   if (!book) return;
   const probe = document.createElement('div');
   probe.className = 'page-probe';
-  const topPad = 30;
-  const bottomPad = 96;
-  probe.style.width = `${Math.max(240, window.innerWidth - 52)}px`;
-  probe.style.height = `${Math.max(220, (window.visualViewport?.height || window.innerHeight) - topPad - bottomPad - 34)}px`;
+  const layout = getReaderLayoutMetrics();
+  probe.style.width = `${Math.max(240, layout.viewportW - layout.marginX * 2)}px`;
+  probe.style.height = `${Math.max(220, layout.viewportH - layout.bodyTop - layout.bodyBottom)}px`;
   probe.style.fontSize = `${state.fontSize}px`;
   probe.style.lineHeight = String(state.lineHeight);
   probe.style.fontFamily = getFontCss();
