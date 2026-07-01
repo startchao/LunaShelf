@@ -152,6 +152,7 @@ button { border: 0; background: none; cursor: pointer; }
 .step-row button { min-width: 44px; height: 36px; font-size: 18px; }
 .sg-lbl.sub { margin-top: 12px; }
 .wake-toggle { width: 100%; min-height: 40px; }
+.apply-layout { width: 100%; margin-top: 10px; min-height: 40px; background: var(--ac) !important; color: #fff !important; border-color: var(--ac) !important; }
 .sg-hint { padding: 6px 2px; color: var(--tx3); font-size: 12px; }
 
 .page-probe { position: fixed; left: -9999px; top: 0; overflow: hidden; visibility: hidden; padding: 0; --para-gap: .65em; }
