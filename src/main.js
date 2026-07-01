@@ -353,6 +353,16 @@ function toggleToolbar(force) {
   $('.reader-head')?.classList.toggle('show', state.toolbarOn);
   $('.reader-controls')?.classList.toggle('show', state.toolbarOn);
 }
+function handleReaderTap(e) {
+  if (!state.currentBook) return;
+  if (e.target.closest('.reader-head, .reader-controls, .pback, button, input, select, label')) return;
+  const x = e.clientX ?? e.changedTouches?.[0]?.clientX;
+  if (!Number.isFinite(x)) return;
+  const ratio = x / window.innerWidth;
+  if (ratio < 0.28) turnPage(-1);
+  else if (ratio > 0.72) turnPage(1);
+  else toggleToolbar();
+}
 function openPanel(panel) { state.panel = panel; renderPanel(); }
 function closePanel() { state.panel = null; renderPanel(); }
 function jumpChapter(i) {
@@ -392,7 +402,7 @@ function readerTemplate() {
   return `
     <section class="reader-view">
       <header class="reader-head ${state.toolbarOn ? 'show' : ''}"><button class="rbk" id="backBtn">◀ 書庫</button><div class="rtitle">${esc(book.title)}</div><div class="rtool"><button class="ribt" id="tocBtn">☰</button><button class="ribt" id="setBtn">⚙</button></div></header>
-      <main class="rbook"><div class="tap-zone zone-left" id="zoneLeft"></div><div class="tap-zone zone-mid" id="zoneMid"></div><div class="tap-zone zone-right" id="zoneRight"></div><article class="rpage"><div class="rp-body"></div><footer class="rp-foot"><span class="rp-num">…</span></footer></article></main>
+      <main class="rbook" id="rbook"><div class="tap-zone zone-left" id="zoneLeft"></div><div class="tap-zone zone-mid" id="zoneMid"></div><div class="tap-zone zone-right" id="zoneRight"></div><article class="rpage"><div class="rp-body"></div><footer class="rp-foot"><span class="rp-num">…</span></footer></article></main>
       <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay">▶</button><button class="rfbt" id="rfStop">⏹</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-div"></div><button class="rftog" id="themeBtn">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
       <div id="panelRoot"></div>
     </section>`;
@@ -448,9 +458,7 @@ function bindEvents() {
   $$('[data-open]').forEach(row => row.addEventListener('click', e => { if (e.target.closest('[data-delete]')) return; openBook(row.dataset.open); }));
   $$('[data-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('books', btn.dataset.delete); state.books = (await DB.all('books')).map(TxtParser.enrichBook); render(); }));
   $('#backBtn')?.addEventListener('click', async () => { tts.stop(); state.books = (await DB.all('books')).map(TxtParser.enrichBook); state.view = 'library'; render(); });
-  $('#zoneLeft')?.addEventListener('click', () => turnPage(-1));
-  $('#zoneRight')?.addEventListener('click', () => turnPage(1));
-  $('#zoneMid')?.addEventListener('click', () => toggleToolbar());
+  $('#rbook')?.addEventListener(window.PointerEvent ? 'pointerup' : 'click', handleReaderTap);
   $('#tocBtn')?.addEventListener('click', () => openPanel('toc'));
   $('#setBtn')?.addEventListener('click', () => openPanel('settings'));
   $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());

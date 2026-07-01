@@ -87,7 +87,7 @@ button { border: 0; background: none; cursor: pointer; }
 .rtitle { flex: 1; font-size: 13px; font-weight: 600; color: var(--tx); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
 .rtool { display: flex; gap: 4px; }
 .ribt { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 17px; color: var(--tx2); border: 1.5px solid var(--bd2); background: var(--bg3); }
-.rbook { position: absolute; inset: 0; overflow: hidden; }
+.rbook { position: absolute; inset: 0; overflow: hidden; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
 .tap-zone { position: absolute; top: 0; bottom: 0; z-index: 20; }
 .zone-left { left: 0; width: 25%; }
 .zone-mid { left: 25%; width: 50%; }
