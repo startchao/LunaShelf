@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.2.4-20260701';
+const APP_VERSION = '0.2.5-20260701';
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
 
@@ -316,7 +316,7 @@ function paginate(goToPara = 0) {
   const probe = document.createElement('div');
   probe.className = 'page-probe';
   const topPad = 30;
-  const bottomPad = 38;
+  const bottomPad = 56;
   probe.style.width = `${Math.max(240, window.innerWidth - 52)}px`;
   probe.style.height = `${Math.max(260, (window.visualViewport?.height || window.innerHeight) - topPad - bottomPad - 22)}px`;
   probe.style.fontSize = `${state.fontSize}px`;
