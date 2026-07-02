@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.4.1-wakelock';
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -25,6 +25,8 @@ const state = {
   fontSize: Number(localStorage.getItem('fontSize') || 18),
   lineHeight: Number(localStorage.getItem('lineHeight') || 1.3),
   paragraphSpacing: Number(localStorage.getItem('paragraphSpacing') || 0.5),
+  keepAwake: localStorage.getItem('keepAwake') !== 'false',
+  wakeLockStatus: 'idle',
   view: 'library',
   toolbarOn: false,
   panel: null,
@@ -139,6 +141,48 @@ class TxtParser {
   }
 }
 
+class WakeLockManager {
+  constructor() { this.sentinel = null; }
+  isSupported() { return 'wakeLock' in navigator && typeof navigator.wakeLock?.request === 'function'; }
+  async request() {
+    if (!state.keepAwake) { state.wakeLockStatus = 'off'; renderTtsState(); return false; }
+    if (!this.isSupported()) { state.wakeLockStatus = 'unsupported'; renderTtsState(); return false; }
+    if (document.visibilityState !== 'visible') { state.wakeLockStatus = 'background'; renderTtsState(); return false; }
+    try {
+      if (!this.sentinel || this.sentinel.released) {
+        this.sentinel = await navigator.wakeLock.request('screen');
+        this.sentinel.addEventListener('release', () => {
+          state.wakeLockStatus = state.keepAwake ? 'released' : 'off';
+          renderTtsState();
+          renderPanel();
+        });
+      }
+      state.wakeLockStatus = 'active';
+      renderTtsState();
+      renderPanel();
+      return true;
+    } catch (err) {
+      console.warn('wake lock unavailable', err);
+      state.wakeLockStatus = 'error';
+      renderTtsState();
+      renderPanel();
+      return false;
+    }
+  }
+  async release() {
+    try { if (this.sentinel && !this.sentinel.released) await this.sentinel.release(); } catch (_) { /* ignore */ }
+    this.sentinel = null;
+    state.wakeLockStatus = state.keepAwake ? 'idle' : 'off';
+    renderTtsState();
+    renderPanel();
+  }
+  async restoreIfNeeded() {
+    if (tts?.state === 'playing') await this.request();
+  }
+}
+
+const wakeLock = new WakeLockManager();
+
 class AudioSessionManager {
   constructor() { this.audio = null; this.objectUrl = null; }
   makeSilentWavUrl() {
@@ -242,6 +286,7 @@ class SpeechQueue {
     this.currentUtterance = null;
     this.speakNext();
     this.audioSession.start(state.currentBook).catch(err => console.warn('Audio session start blocked', err));
+    wakeLock.request().catch(err => console.warn('wake lock request failed', err));
     renderTtsState();
     clearTimeout(this.startWatchdog);
     this.startWatchdog = setTimeout(() => {
@@ -261,8 +306,8 @@ class SpeechQueue {
     this.currentUtterance = this.makeUtterance(seg.text, seg.paraIdx);
     speechSynthesis.speak(this.currentUtterance);
   }
-  pause() { this.state = 'paused'; this.audioSession.stop(); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
-  stop() { this.state = 'idle'; this.audioSession.stop(); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
+  pause() { this.state = 'paused'; this.audioSession.stop(); wakeLock.release().catch(() => {}); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
+  stop() { this.state = 'idle'; this.audioSession.stop(); wakeLock.release().catch(() => {}); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
 }
 
 const tts = new SpeechQueue();
@@ -286,6 +331,10 @@ function getFontCss() {
 }
 function getParagraphGapEm() {
   return `${Math.max(0, state.paragraphSpacing) * Math.max(1, state.lineHeight)}em`;
+}
+function wakeLockLabel() {
+  const labels = { active: '已啟用', idle: '待命', off: '關閉', unsupported: '瀏覽器不支援', released: '已被系統釋放', background: '背景中暫停', error: '啟用失敗' };
+  return labels[state.wakeLockStatus] || '待命';
 }
 function bookProgress(book) {
   const total = book.paragraphs?.length || 1;
@@ -461,6 +510,12 @@ function renderTtsState() {
     sleepBtn.classList.toggle('on', Boolean(left));
     sleepBtn.title = left ? `定時關閉：剩 ${left} 分` : '設定 15 分鐘定時關閉';
   }
+  const wakeBtn = $('#wakeBtn');
+  if (wakeBtn) {
+    wakeBtn.textContent = state.keepAwake ? '🔆' : '🔅';
+    wakeBtn.classList.toggle('on', state.keepAwake && ['active', 'idle', 'released'].includes(state.wakeLockStatus));
+    wakeBtn.title = `聽書長亮：${wakeLockLabel()}`;
+  }
 }
 function sleepMinutesLeft() {
   return Math.max(0, Math.ceil((state.sleepUntil - Date.now()) / 60000));
@@ -505,7 +560,7 @@ function readerTemplate() {
     <section class="reader-view">
       <header class="reader-head ${state.toolbarOn ? 'show' : ''}"><button class="rbk" id="backBtn">◀ 書庫</button><div class="rtitle">${esc(book.title)}</div><div class="rtool"><button class="ribt" id="tocBtn">☰</button><button class="ribt" id="setBtn">⚙</button></div></header>
       <main class="rbook" id="rbook"><div class="tap-zone zone-left" id="zoneLeft"></div><div class="tap-zone zone-mid" id="zoneMid"></div><div class="tap-zone zone-right" id="zoneRight"></div><article class="rpage"><div class="rp-body"></div><footer class="rp-foot"><span class="rp-num">…</span></footer></article></main>
-      <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay" aria-label="播放/暫停">▶</button><button class="rfbt" id="rfStop" aria-label="停止">⏹</button><button class="rfbt" id="sleepBtn" aria-label="定時關閉">⏱</button><div class="rf-div"></div><button class="rfbt" id="bottomTocBtn" aria-label="目錄">☰</button><button class="rfbt" id="bottomSetBtn" aria-label="設定">⚙</button><button class="rftog" id="themeBtn" aria-label="日夜切換">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
+      <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay" aria-label="播放/暫停">▶</button><button class="rfbt" id="rfStop" aria-label="停止">⏹</button><button class="rfbt" id="sleepBtn" aria-label="定時關閉">⏱</button><button class="rfbt" id="wakeBtn" aria-label="聽書長亮">🔆</button><div class="rf-div"></div><button class="rfbt" id="bottomTocBtn" aria-label="目錄">☰</button><button class="rfbt" id="bottomSetBtn" aria-label="設定">⚙</button><button class="rftog" id="themeBtn" aria-label="日夜切換">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
       <div id="panelRoot"></div>
     </section>`;
 }
@@ -521,7 +576,8 @@ function panelTemplate() {
   const lineHeight = state.lineHeight.toFixed(1);
   const paragraphSpacing = state.paragraphSpacing.toFixed(1);
   const sleepBtns = [0, 5, 10, 15, 30].map(min => `<button class="slp-bt ${(min === 0 && !sleepLeft) || (min > 0 && sleepLeft === min) ? 'on' : ''}" data-sleep="${min}">${min ? `${min}分` : '關閉'}</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  const keepAwakeStatus = wakeLockLabel();
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">螢幕長亮</div><button class="wake-toggle ${state.keepAwake ? 'on' : ''}" id="keepAwakeToggle">${state.keepAwake ? '聽書時保持螢幕長亮：開' : '聽書時保持螢幕長亮：關'}</button><div class="sg-hint">狀態：${keepAwakeStatus}。iOS 若切到背景、低電量或手動鎖定，系統仍可能釋放；這是瀏覽器限制。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -551,6 +607,14 @@ function bindPanelEvents() {
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
   $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
+  $('#keepAwakeToggle')?.addEventListener('click', async () => {
+    state.keepAwake = !state.keepAwake;
+    localStorage.setItem('keepAwake', String(state.keepAwake));
+    if (state.keepAwake && tts.state === 'playing') await wakeLock.request();
+    else await wakeLock.release();
+    renderPanel();
+    renderTtsState();
+  });
   $('#lineHeight')?.addEventListener('input', e => {
     state.lineHeight = Number(e.target.value);
     localStorage.setItem('lineHeight', String(state.lineHeight));
@@ -583,6 +647,14 @@ function bindEvents() {
   $('#bottomTocBtn')?.addEventListener('click', () => openPanel('toc'));
   $('#bottomSetBtn')?.addEventListener('click', () => openPanel('settings'));
   $('#sleepBtn')?.addEventListener('click', () => setSleepTimer(sleepMinutesLeft() ? 0 : 15));
+  $('#wakeBtn')?.addEventListener('click', async () => {
+    state.keepAwake = !state.keepAwake;
+    localStorage.setItem('keepAwake', String(state.keepAwake));
+    if (state.keepAwake && tts.state === 'playing') await wakeLock.request();
+    else await wakeLock.release();
+    toast(state.keepAwake ? '聽書長亮已開啟' : '聽書長亮已關閉');
+    renderTtsState();
+  });
   $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());
   $('#rfStop')?.addEventListener('click', () => tts.stop());
   $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); localStorage.setItem('fontSize', state.fontSize); repaginateKeepPosition(); });
@@ -611,4 +683,5 @@ async function boot() {
   }
 }
 window.addEventListener('resize', () => { if (state.view === 'reader' && state.currentBook) repaginateKeepPosition(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') wakeLock.restoreIfNeeded().catch(() => {}); });
 boot().catch(err => { console.error(err); toast(`啟動失敗：${err.message}`); });

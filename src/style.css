@@ -147,6 +147,8 @@ button { border: 0; background: none; cursor: pointer; }
 .slp-wrap { display: flex; gap: 6px; flex-wrap: wrap; }
 .slp-bt, .sg button { min-width: 54px; height: 34px; border-radius: 9px; border: 1.5px solid var(--bd2); background: var(--panelbg2); color: var(--tx2); font-size: 13px; font-weight: 700; }
 .slp-bt.on { background: var(--ac); color: #fff; border-color: var(--ac); }
+.wake-toggle { width: 100%; min-height: 42px; border-radius: 12px; border: 1.5px solid var(--bd2); background: var(--panelbg2); color: var(--tx2); font-size: 14px; font-weight: 800; }
+.wake-toggle.on { background: var(--ac); color: #fff; border-color: var(--ac); }
 .sg-hint { padding: 6px 2px; color: var(--tx3); font-size: 12px; }
 
 .page-probe { position: fixed; left: -10000px; top: 0; right: auto; bottom: auto; overflow: hidden; visibility: hidden; pointer-events: none; padding: 0; contain: layout; --para-gap: .65em; }
