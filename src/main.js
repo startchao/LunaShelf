@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.4.2-recent-books';
+const APP_VERSION = '0.4.3-airpods-volume';
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -25,6 +25,7 @@ const state = {
   fontSize: Number(localStorage.getItem('fontSize') || 18),
   lineHeight: Number(localStorage.getItem('lineHeight') || 1.3),
   paragraphSpacing: Number(localStorage.getItem('paragraphSpacing') || 0.5),
+  ttsVolume: Number(localStorage.getItem('ttsVolume') || 1),
   keepAwake: localStorage.getItem('keepAwake') !== 'false',
   wakeLockStatus: 'idle',
   view: 'library',
@@ -202,7 +203,7 @@ class AudioSessionManager {
       this.audio.loop = true;
       this.audio.playsInline = true;
       this.audio.preload = 'auto';
-      this.audio.volume = 1;
+      this.audio.volume = state.ttsVolume;
       this.audio.setAttribute('aria-hidden', 'true');
       document.body.appendChild(this.audio);
     }
@@ -259,7 +260,7 @@ class SpeechQueue {
     u.lang = zh?.lang || 'zh-TW';
     u.rate = Number(localStorage.getItem('speechRate') || 1);
     u.pitch = 1;
-    u.volume = 1;
+    u.volume = state.ttsVolume;
     u.onstart = () => highlightPara(paraIdx);
     u.onend = () => { this.currentUtterance = null; this.nextPara = Math.max(this.nextPara, paraIdx + 1); saveProgressFromPage(); this.speakNext(); };
     u.onerror = ev => { console.warn('TTS error', ev.error || ev); this.currentUtterance = null; this.nextPara = Math.max(this.nextPara, paraIdx + 1); this.speakNext(); };
@@ -331,6 +332,19 @@ function getFontCss() {
 }
 function getParagraphGapEm() {
   return `${Math.max(0, state.paragraphSpacing) * Math.max(1, state.lineHeight)}em`;
+}
+function clampTtsVolume(value) {
+  return Math.max(0.1, Math.min(1, Number(value) || 1));
+}
+function setTtsVolume(value, persist = true) {
+  state.ttsVolume = clampTtsVolume(value);
+  if (persist) localStorage.setItem('ttsVolume', String(state.ttsVolume));
+  if (tts?.currentUtterance) tts.currentUtterance.volume = state.ttsVolume;
+  if (tts?.audioSession?.audio) tts.audioSession.audio.volume = state.ttsVolume;
+  const slider = $('#speechVolume');
+  const label = $('#speechVolumeVal');
+  if (slider) slider.value = String(state.ttsVolume);
+  if (label) label.textContent = `${Math.round(state.ttsVolume * 100)}%`;
 }
 function wakeLockLabel() {
   const labels = { active: '已啟用', idle: '待命', off: '關閉', unsupported: '瀏覽器不支援', released: '已被系統釋放', background: '背景中暫停', error: '啟用失敗' };
@@ -595,9 +609,10 @@ function panelTemplate() {
   const sleepLeft = sleepMinutesLeft();
   const lineHeight = state.lineHeight.toFixed(1);
   const paragraphSpacing = state.paragraphSpacing.toFixed(1);
+  const speechVolume = clampTtsVolume(state.ttsVolume);
   const sleepBtns = [0, 5, 10, 15, 30].map(min => `<button class="slp-bt ${(min === 0 && !sleepLeft) || (min > 0 && sleepLeft === min) ? 'on' : ''}" data-sleep="${min}">${min ? `${min}分` : '關閉'}</button>`).join('');
   const keepAwakeStatus = wakeLockLabel();
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">螢幕長亮</div><button class="wake-toggle ${state.keepAwake ? 'on' : ''}" id="keepAwakeToggle">${state.keepAwake ? '聽書時保持螢幕長亮：開' : '聽書時保持螢幕長亮：關'}</button><div class="sg-hint">狀態：${keepAwakeStatus}。iOS 若切到背景、低電量或手動鎖定，系統仍可能釋放；這是瀏覽器限制。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">螢幕長亮</div><button class="wake-toggle ${state.keepAwake ? 'on' : ''}" id="keepAwakeToggle">${state.keepAwake ? '聽書時保持螢幕長亮：開' : '聽書時保持螢幕長亮：關'}</button><div class="sg-hint">狀態：${keepAwakeStatus}。iOS 若切到背景、低電量或手動鎖定，系統仍可能釋放；這是瀏覽器限制。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -629,6 +644,7 @@ function bindPanelEvents() {
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
   $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
+  $('#speechVolume')?.addEventListener('input', e => setTtsVolume(e.target.value));
   $('#keepAwakeToggle')?.addEventListener('click', async () => {
     state.keepAwake = !state.keepAwake;
     localStorage.setItem('keepAwake', String(state.keepAwake));
