@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.4.3-airpods-volume';
+const APP_VERSION = '0.4.4-audio-resume';
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -196,22 +196,24 @@ class AudioSessionManager {
     write(36, 'data'); view.setUint32(40, samples * 2, true);
     return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
   }
+  ensureAudio() {
+    if (this.audio) return;
+    this.objectUrl = this.makeSilentWavUrl();
+    this.audio = new Audio(this.objectUrl);
+    this.audio.loop = true;
+    this.audio.playsInline = true;
+    this.audio.preload = 'auto';
+    this.audio.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(this.audio);
+  }
   async start(book) {
-    if (!this.audio) {
-      this.objectUrl = this.makeSilentWavUrl();
-      this.audio = new Audio(this.objectUrl);
-      this.audio.loop = true;
-      this.audio.playsInline = true;
-      this.audio.preload = 'auto';
-      this.audio.volume = state.ttsVolume;
-      this.audio.setAttribute('aria-hidden', 'true');
-      document.body.appendChild(this.audio);
-    }
+    this.ensureAudio();
+    this.audio.volume = state.ttsVolume;
     try { await this.audio.play(); } catch (err) { console.warn('Audio session start blocked', err); }
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({ title: book?.title || '月閣', artist: 'LunaShelf', album: 'TXT Reader' });
       navigator.mediaSession.playbackState = 'playing';
-      navigator.mediaSession.setActionHandler('play', () => tts.play());
+      navigator.mediaSession.setActionHandler('play', () => tts.resumeAfterInterruption('media-session'));
       navigator.mediaSession.setActionHandler('pause', () => tts.pause());
       navigator.mediaSession.setActionHandler('stop', () => tts.stop());
       navigator.mediaSession.setActionHandler('seekbackward', () => turnPage(-1));
@@ -229,8 +231,12 @@ class SpeechQueue {
     this.segments = [];
     this.segmentIndex = 0;
     this.currentUtterance = null;
+    this.activeSegment = null;
     this.audioSession = new AudioSessionManager();
     this.startWatchdog = null;
+    this.resumeTimer = null;
+    this.startRetries = 0;
+    this.autoResumeWanted = false;
   }
   isSupported() { return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window; }
   pickVoice() {
@@ -261,9 +267,29 @@ class SpeechQueue {
     u.rate = Number(localStorage.getItem('speechRate') || 1);
     u.pitch = 1;
     u.volume = state.ttsVolume;
-    u.onstart = () => highlightPara(paraIdx);
-    u.onend = () => { this.currentUtterance = null; this.nextPara = Math.max(this.nextPara, paraIdx + 1); saveProgressFromPage(); this.speakNext(); };
-    u.onerror = ev => { console.warn('TTS error', ev.error || ev); this.currentUtterance = null; this.nextPara = Math.max(this.nextPara, paraIdx + 1); this.speakNext(); };
+    u.onstart = () => {
+      if (this.currentUtterance !== u) return;
+      this.startRetries = 0;
+      clearTimeout(this.startWatchdog);
+      highlightPara(paraIdx);
+    };
+    u.onend = () => {
+      if (this.currentUtterance !== u || this.state !== 'playing') return;
+      this.currentUtterance = null;
+      this.activeSegment = null;
+      this.nextPara = Math.max(this.nextPara, paraIdx + 1);
+      saveProgressFromPage();
+      this.speakNext();
+    };
+    u.onerror = ev => {
+      if (this.currentUtterance !== u || this.state !== 'playing') return;
+      console.warn('TTS error', ev.error || ev);
+      this.currentUtterance = null;
+      if (['interrupted', 'canceled'].includes(ev.error)) return;
+      this.activeSegment = null;
+      this.nextPara = Math.max(this.nextPara, paraIdx + 1);
+      this.speakNext();
+    };
     return u;
   }
   buildSegments(startPara) {
@@ -274,29 +300,56 @@ class SpeechQueue {
     }
     return out;
   }
+  prepareFrom(startPara) {
+    this.nextPara = Math.max(0, startPara || 0);
+    this.segments = this.buildSegments(this.nextPara);
+    this.segmentIndex = 0;
+    this.activeSegment = null;
+  }
   play() {
     if (!state.currentBook) return toast('請先開啟一本 TXT');
     if (!this.isSupported()) return toast('這個瀏覽器不支援朗讀，請用 Safari/Edge/Chrome 測試');
-    if (this.state === 'playing') return;
+    if (this.state === 'playing') return this.resumeAfterInterruption('manual-play');
+    const startPara = this.state === 'paused'
+      ? this.nextPara
+      : (state.pages[state.currentPage]?.startPara ?? state.currentBook.progressPara ?? 0);
     this.state = 'playing';
-    const page = state.pages[state.currentPage];
-    this.nextPara = page?.startPara ?? state.currentBook.progressPara ?? 0;
-    this.segments = this.buildSegments(this.nextPara);
-    this.segmentIndex = 0;
-    speechSynthesis.cancel();
+    this.autoResumeWanted = true;
+    this.prepareFrom(startPara);
+    clearTimeout(this.startWatchdog);
     this.currentUtterance = null;
-    this.speakNext();
+    speechSynthesis.cancel();
     this.audioSession.start(state.currentBook).catch(err => console.warn('Audio session start blocked', err));
     wakeLock.request().catch(err => console.warn('wake lock request failed', err));
     renderTtsState();
+    setTimeout(() => this.speakNext(), 60);
+  }
+  armStartWatchdog() {
     clearTimeout(this.startWatchdog);
     this.startWatchdog = setTimeout(() => {
-      if (this.state === 'playing' && !speechSynthesis.speaking && !speechSynthesis.pending) {
+      if (this.state !== 'playing' || speechSynthesis.speaking || speechSynthesis.pending) return;
+      if (this.startRetries < 2) {
+        this.startRetries += 1;
+        this.retryActiveSegment();
+      } else {
         this.state = 'idle';
+        this.autoResumeWanted = false;
         renderTtsState();
-        toast('朗讀未啟動，請再點一次播放；iPhone 可能需要使用者手勢');
+        toast('朗讀未啟動；已重試，請再點一次播放');
       }
-    }, 1400);
+    }, 1200);
+  }
+  retryActiveSegment() {
+    if (!this.activeSegment || this.state !== 'playing') return;
+    const seg = this.activeSegment;
+    this.currentUtterance = null;
+    speechSynthesis.cancel();
+    setTimeout(() => {
+      if (this.state !== 'playing') return;
+      this.currentUtterance = this.makeUtterance(seg.text, seg.paraIdx);
+      speechSynthesis.speak(this.currentUtterance);
+      this.armStartWatchdog();
+    }, 120);
   }
   speakNext() {
     const book = state.currentBook;
@@ -304,11 +357,58 @@ class SpeechQueue {
     const seg = this.segments[this.segmentIndex++];
     if (!seg) return this.stop();
     this.nextPara = seg.paraIdx;
+    this.activeSegment = seg;
     this.currentUtterance = this.makeUtterance(seg.text, seg.paraIdx);
     speechSynthesis.speak(this.currentUtterance);
+    this.armStartWatchdog();
   }
-  pause() { this.state = 'paused'; this.audioSession.stop(); wakeLock.release().catch(() => {}); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
-  stop() { this.state = 'idle'; this.audioSession.stop(); wakeLock.release().catch(() => {}); speechSynthesis.cancel(); this.currentUtterance = null; this.segments = []; clearTimeout(this.startWatchdog); renderTtsState(); saveProgressFromPage(); }
+  resumeAfterInterruption(reason = 'foreground') {
+    if (!state.currentBook || !this.isSupported()) return;
+    if (this.state === 'paused') return this.play();
+    if (this.state !== 'playing' && !this.autoResumeWanted) return;
+    this.state = 'playing';
+    this.autoResumeWanted = true;
+    this.audioSession.start(state.currentBook).catch(err => console.warn('Audio session resume blocked', reason, err));
+    wakeLock.request().catch(() => {});
+    renderTtsState();
+    if (speechSynthesis.paused) speechSynthesis.resume();
+    clearTimeout(this.resumeTimer);
+    this.resumeTimer = setTimeout(() => {
+      if (this.state !== 'playing') return;
+      if (speechSynthesis.speaking || speechSynthesis.pending) return;
+      if (this.activeSegment) this.retryActiveSegment();
+      else {
+        this.prepareFrom(this.nextPara || state.pages[state.currentPage]?.startPara || 0);
+        this.speakNext();
+      }
+    }, 180);
+  }
+  pause() {
+    this.state = 'paused';
+    this.autoResumeWanted = false;
+    this.audioSession.stop();
+    wakeLock.release().catch(() => {});
+    clearTimeout(this.startWatchdog);
+    clearTimeout(this.resumeTimer);
+    this.currentUtterance = null;
+    speechSynthesis.cancel();
+    renderTtsState();
+    saveProgressFromPage();
+  }
+  stop() {
+    this.state = 'idle';
+    this.autoResumeWanted = false;
+    this.audioSession.stop();
+    wakeLock.release().catch(() => {});
+    clearTimeout(this.startWatchdog);
+    clearTimeout(this.resumeTimer);
+    this.currentUtterance = null;
+    this.activeSegment = null;
+    this.segments = [];
+    speechSynthesis.cancel();
+    renderTtsState();
+    saveProgressFromPage();
+  }
 }
 
 const tts = new SpeechQueue();
@@ -721,5 +821,10 @@ async function boot() {
   }
 }
 window.addEventListener('resize', () => { if (state.view === 'reader' && state.currentBook) repaginateKeepPosition(); });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') wakeLock.restoreIfNeeded().catch(() => {}); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    wakeLock.restoreIfNeeded().catch(() => {});
+    tts.resumeAfterInterruption('visibilitychange');
+  }
+});
 boot().catch(err => { console.error(err); toast(`啟動失敗：${err.message}`); });
