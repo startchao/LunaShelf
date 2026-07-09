@@ -2,7 +2,7 @@
   "name": "LunaShelf",
   "short_name": "LunaShelf",
   "description": "TXT-first personal novel reader with custom fonts and queue-based read-aloud.",
-  "start_url": "/LunaShelf/?v=20260701",
+  "start_url": "/LunaShelf/?v=20260709-recent-books",
   "scope": "/LunaShelf/",
   "display": "standalone",
   "background_color": "#15110d",

@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.4.1-wakelock';
+const APP_VERSION = '0.4.2-recent-books';
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -342,8 +342,23 @@ function bookProgress(book) {
 }
 function bookCoverColor(title) {
   const colors = ['#123c33', '#321047', '#503516', '#17344f', '#4a1d24'];
-  let n = 0; [...title].forEach(c => { n += c.charCodeAt(0); });
+  const n = [...String(title || '')].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
   return colors[n % colors.length];
+}
+function bookReadTime(book) {
+  return Number(book.lastReadAt || (book.progressPara ? book.updatedAt : 0) || 0);
+}
+function isReadingBook(book) {
+  return Boolean(bookReadTime(book) || (book.progressPara || 0) > 0);
+}
+function sortedLibraryBooks() {
+  return [...state.books].sort((a, b) => {
+    const ar = isReadingBook(a) ? 1 : 0;
+    const br = isReadingBook(b) ? 1 : 0;
+    if (ar !== br) return br - ar;
+    if (ar && br) return bookReadTime(b) - bookReadTime(a);
+    return Number(b.createdAt || b.updatedAt || 0) - Number(a.createdAt || a.updatedAt || 0);
+  });
 }
 
 async function importBook(file) {
@@ -542,17 +557,22 @@ function restoreSleepTimer() {
 }
 
 function libraryTemplate() {
+  const books = sortedLibraryBooks();
+  const recentCount = books.filter(isReadingBook).length;
+  const shelfLabel = recentCount ? `近期閱讀 ${recentCount} 本優先` : '依匯入時間排序';
   return `
     <header class="lhd"><div class="lhd-logo">月閣 <small>LunaShelf v${APP_VERSION}</small></div><button class="ibt" id="refreshBtn" aria-label="強制更新">↻</button><button class="ibt" id="themeBtn" aria-label="切換夜間">${state.theme === 'dark' ? '☀' : '🌙'}</button><button class="ibt" id="topImportBtn" aria-label="匯入 TXT">＋</button></header>
     <main class="lbody">
-      <div class="lbar"><span class="lbar-t">書庫</span><div class="lbar-l"></div><span class="lbar-c">${state.books.length} 本</span></div>
-      <section class="blist">${state.books.map(bookRow).join('') || '<div class="bempty"><div class="bempty-ico">書</div><div class="bempty-txt">書庫空空如也<br>上傳 TXT 格式小說開始閱讀</div><label class="bempty-btn">＋ 上傳第一本書<input id="emptyImport" type="file" accept=".txt,text/plain" hidden></label></div>'}</section>
+      <div class="lbar"><span class="lbar-t">書庫</span><div class="lbar-l"></div><span class="lbar-c">${state.books.length} 本 · ${shelfLabel}</span></div>
+      <section class="blist">${books.map(bookRow).join('') || '<div class="bempty"><div class="bempty-ico">書</div><div class="bempty-txt">書庫空空如也<br>上傳 TXT 格式小說開始閱讀</div><label class="bempty-btn">＋ 上傳第一本書<input id="emptyImport" type="file" accept=".txt,text/plain" hidden></label></div>'}</section>
     </main>
     <button class="fab" id="fab" aria-label="上傳書籍">＋</button><input id="bookInput" type="file" accept=".txt,text/plain" hidden>`;
 }
 function bookRow(book) {
   const pct = bookProgress(book);
-  return `<article class="brow" data-open="${book.id}"><div class="brow-cov" style="background:${bookCoverColor(book.title)}"><span>${esc(book.title)}</span></div><div class="brow-info"><button class="brow-del" data-delete="${book.id}" aria-label="刪除">×</button><div class="brow-title">${esc(book.title)}</div><div class="brow-meta"><span>${book.chapters?.length || 1} 章</span><span>${book.paragraphs?.length || 0} 段</span></div><div class="brow-prog-wrap"><div class="brow-prog"><div class="brow-prog-f" style="width:${pct}%"></div></div><span class="brow-pct">${pct}%</span></div><span class="brow-pill">繼續閱讀 ${pct}%</span></div></article>`;
+  const reading = isReadingBook(book);
+  const pill = reading ? `近期閱讀 · ${pct}%` : `開始閱讀 ${pct}%`;
+  return `<article class="brow ${reading ? 'recent' : ''}" data-open="${book.id}"><div class="brow-cov" style="background:${bookCoverColor(book.title)}"><span>${esc(book.title)}</span></div><div class="brow-info"><button class="brow-del" data-delete="${book.id}" aria-label="刪除">×</button><div class="brow-title">${esc(book.title)}</div><div class="brow-meta"><span>${book.chapters?.length || 1} 章</span><span>${book.paragraphs?.length || 0} 段</span>${reading ? '<span>最近讀</span>' : ''}</div><div class="brow-prog-wrap"><div class="brow-prog"><div class="brow-prog-f" style="width:${pct}%"></div></div><span class="brow-pct">${pct}%</span></div><span class="brow-pill">${pill}</span></div></article>`;
 }
 function readerTemplate() {
   const book = state.currentBook;
@@ -593,6 +613,8 @@ function renderPanel() {
 
 async function openBook(id) {
   state.currentBook = TxtParser.enrichBook(await DB.get('books', id));
+  state.currentBook.lastReadAt = Date.now();
+  await saveBook(state.currentBook);
   state.view = 'reader';
   state.toolbarOn = false;
   paginate(state.currentBook.progressPara || 0);
