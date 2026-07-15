@@ -244,6 +244,15 @@ class SpeechQueue {
     return voices.find(v => /zh-TW|zh_Hant|cmn-Hant|Taiwan/i.test(`${v.lang} ${v.name}`))
       || voices.find(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
   }
+  // NOTE: pickVoice() is kept for possible future manual voice selection,
+  // but is intentionally NOT called from makeUtterance() below anymore.
+  // Reason: speechSynthesis.getVoices() returns an incomplete list on iOS
+  // until the 'voiceschanged' event fires. Calling pickVoice() fresh on
+  // every paragraph meant the first utterance(s) got no matching voice
+  // (falls back to the OS default), then once the full voice list loaded,
+  // later utterances matched a specific voice (e.g. "Mei-Jia") — causing
+  // the voice to audibly switch mid-session. Leaving u.voice unset makes
+  // every utterance consistently use the OS default voice instead.
   splitText(text) {
     const src = text.trim();
     if (src.length <= this.maxChars) return [src];
@@ -261,9 +270,8 @@ class SpeechQueue {
   }
   makeUtterance(text, paraIdx) {
     const u = new SpeechSynthesisUtterance(text);
-    const zh = this.pickVoice();
-    if (zh) u.voice = zh;
-    u.lang = zh?.lang || 'zh-TW';
+    // Force the OS/system default voice for every utterance (see note above pickVoice()).
+    u.lang = 'zh-TW';
     u.rate = Number(localStorage.getItem('speechRate') || 1);
     u.pitch = 1;
     u.volume = state.ttsVolume;
