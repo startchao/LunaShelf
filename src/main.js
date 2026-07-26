@@ -1,6 +1,6 @@
 import './style.css';
 
-const APP_VERSION = '0.4.4-audio-resume';
+const APP_VERSION = '0.4.5-auto-wake-lock';
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -26,7 +26,6 @@ const state = {
   lineHeight: Number(localStorage.getItem('lineHeight') || 1.3),
   paragraphSpacing: Number(localStorage.getItem('paragraphSpacing') || 0.5),
   ttsVolume: Number(localStorage.getItem('ttsVolume') || 1),
-  keepAwake: localStorage.getItem('keepAwake') !== 'false',
   wakeLockStatus: 'idle',
   view: 'library',
   toolbarOn: false,
@@ -146,14 +145,13 @@ class WakeLockManager {
   constructor() { this.sentinel = null; }
   isSupported() { return 'wakeLock' in navigator && typeof navigator.wakeLock?.request === 'function'; }
   async request() {
-    if (!state.keepAwake) { state.wakeLockStatus = 'off'; renderTtsState(); return false; }
     if (!this.isSupported()) { state.wakeLockStatus = 'unsupported'; renderTtsState(); return false; }
     if (document.visibilityState !== 'visible') { state.wakeLockStatus = 'background'; renderTtsState(); return false; }
     try {
       if (!this.sentinel || this.sentinel.released) {
         this.sentinel = await navigator.wakeLock.request('screen');
         this.sentinel.addEventListener('release', () => {
-          state.wakeLockStatus = state.keepAwake ? 'released' : 'off';
+          state.wakeLockStatus = 'released';
           renderTtsState();
           renderPanel();
         });
@@ -173,7 +171,7 @@ class WakeLockManager {
   async release() {
     try { if (this.sentinel && !this.sentinel.released) await this.sentinel.release(); } catch (_) { /* ignore */ }
     this.sentinel = null;
-    state.wakeLockStatus = state.keepAwake ? 'idle' : 'off';
+    state.wakeLockStatus = 'idle';
     renderTtsState();
     renderPanel();
   }
@@ -454,10 +452,6 @@ function setTtsVolume(value, persist = true) {
   if (slider) slider.value = String(state.ttsVolume);
   if (label) label.textContent = `${Math.round(state.ttsVolume * 100)}%`;
 }
-function wakeLockLabel() {
-  const labels = { active: '已啟用', idle: '待命', off: '關閉', unsupported: '瀏覽器不支援', released: '已被系統釋放', background: '背景中暫停', error: '啟用失敗' };
-  return labels[state.wakeLockStatus] || '待命';
-}
 function bookProgress(book) {
   const total = book.paragraphs?.length || 1;
   return Math.round(((book.progressPara || 0) / Math.max(1, total - 1)) * 100);
@@ -645,13 +639,7 @@ function renderTtsState() {
     const left = sleepMinutesLeft();
     sleepBtn.textContent = left ? `${left}` : '⏱';
     sleepBtn.classList.toggle('on', Boolean(left));
-    sleepBtn.title = left ? `定時關閉：剩 ${left} 分` : '設定 15 分鐘定時關閉';
-  }
-  const wakeBtn = $('#wakeBtn');
-  if (wakeBtn) {
-    wakeBtn.textContent = state.keepAwake ? '🔆' : '🔅';
-    wakeBtn.classList.toggle('on', state.keepAwake && ['active', 'idle', 'released'].includes(state.wakeLockStatus));
-    wakeBtn.title = `聽書長亮：${wakeLockLabel()}`;
+    sleepBtn.title = left ? `定時關閉：剩 ${left} 分；點擊取消` : '選擇定時關閉時間';
   }
 }
 function sleepMinutesLeft() {
@@ -702,7 +690,7 @@ function readerTemplate() {
     <section class="reader-view">
       <header class="reader-head ${state.toolbarOn ? 'show' : ''}"><button class="rbk" id="backBtn">◀ 書庫</button><div class="rtitle">${esc(book.title)}</div><div class="rtool"><button class="ribt" id="tocBtn">☰</button><button class="ribt" id="setBtn">⚙</button></div></header>
       <main class="rbook" id="rbook"><div class="tap-zone zone-left" id="zoneLeft"></div><div class="tap-zone zone-mid" id="zoneMid"></div><div class="tap-zone zone-right" id="zoneRight"></div><article class="rpage"><div class="rp-body"></div><footer class="rp-foot"><span class="rp-num">…</span></footer></article></main>
-      <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay" aria-label="播放/暫停">▶</button><button class="rfbt" id="rfStop" aria-label="停止">⏹</button><button class="rfbt" id="sleepBtn" aria-label="定時關閉">⏱</button><button class="rfbt" id="wakeBtn" aria-label="聽書長亮">🔆</button><div class="rf-div"></div><button class="rfbt" id="bottomTocBtn" aria-label="目錄">☰</button><button class="rfbt" id="bottomSetBtn" aria-label="設定">⚙</button><button class="rftog" id="themeBtn" aria-label="日夜切換">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
+      <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay" aria-label="播放/暫停">▶</button><button class="rfbt" id="rfStop" aria-label="停止">⏹</button><button class="rfbt" id="sleepBtn" aria-label="定時關閉">⏱</button><div class="rf-div"></div><button class="rfbt" id="bottomTocBtn" aria-label="目錄">☰</button><button class="rfbt" id="bottomSetBtn" aria-label="設定">⚙</button><button class="rftog" id="themeBtn" aria-label="日夜切換">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
       <div id="panelRoot"></div>
     </section>`;
 }
@@ -718,9 +706,8 @@ function panelTemplate() {
   const lineHeight = state.lineHeight.toFixed(1);
   const paragraphSpacing = state.paragraphSpacing.toFixed(1);
   const speechVolume = clampTtsVolume(state.ttsVolume);
-  const sleepBtns = [0, 5, 10, 15, 30].map(min => `<button class="slp-bt ${(min === 0 && !sleepLeft) || (min > 0 && sleepLeft === min) ? 'on' : ''}" data-sleep="${min}">${min ? `${min}分` : '關閉'}</button>`).join('');
-  const keepAwakeStatus = wakeLockLabel();
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">螢幕長亮</div><button class="wake-toggle ${state.keepAwake ? 'on' : ''}" id="keepAwakeToggle">${state.keepAwake ? '聽書時保持螢幕長亮：開' : '聽書時保持螢幕長亮：關'}</button><div class="sg-hint">狀態：${keepAwakeStatus}。iOS 若切到背景、低電量或手動鎖定，系統仍可能釋放；這是瀏覽器限制。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  const sleepBtns = [10, 30, 50, 60].map(min => `<button class="slp-bt ${sleepLeft === min ? 'on' : ''}" data-sleep="${min}">${min}分</button>`).join('');
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="0.5" max="2.5" step="0.1" value="${localStorage.getItem('speechRate') || 1}"><span class="spd-val" id="speechRateVal">${Number(localStorage.getItem('speechRate') || 1).toFixed(1)}×</span></div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -753,14 +740,6 @@ function bindPanelEvents() {
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
   $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
   $('#speechVolume')?.addEventListener('input', e => setTtsVolume(e.target.value));
-  $('#keepAwakeToggle')?.addEventListener('click', async () => {
-    state.keepAwake = !state.keepAwake;
-    localStorage.setItem('keepAwake', String(state.keepAwake));
-    if (state.keepAwake && tts.state === 'playing') await wakeLock.request();
-    else await wakeLock.release();
-    renderPanel();
-    renderTtsState();
-  });
   $('#lineHeight')?.addEventListener('input', e => {
     state.lineHeight = Number(e.target.value);
     localStorage.setItem('lineHeight', String(state.lineHeight));
@@ -792,15 +771,7 @@ function bindEvents() {
   $('#setBtn')?.addEventListener('click', () => openPanel('settings'));
   $('#bottomTocBtn')?.addEventListener('click', () => openPanel('toc'));
   $('#bottomSetBtn')?.addEventListener('click', () => openPanel('settings'));
-  $('#sleepBtn')?.addEventListener('click', () => setSleepTimer(sleepMinutesLeft() ? 0 : 15));
-  $('#wakeBtn')?.addEventListener('click', async () => {
-    state.keepAwake = !state.keepAwake;
-    localStorage.setItem('keepAwake', String(state.keepAwake));
-    if (state.keepAwake && tts.state === 'playing') await wakeLock.request();
-    else await wakeLock.release();
-    toast(state.keepAwake ? '聽書長亮已開啟' : '聽書長亮已關閉');
-    renderTtsState();
-  });
+  $('#sleepBtn')?.addEventListener('click', () => sleepMinutesLeft() ? setSleepTimer(0) : openPanel('settings'));
   $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());
   $('#rfStop')?.addEventListener('click', () => tts.stop());
   $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); localStorage.setItem('fontSize', state.fontSize); repaginateKeepPosition(); });
@@ -816,6 +787,7 @@ async function render() {
 }
 async function boot() {
   setTheme(state.theme);
+  localStorage.removeItem('keepAwake');
   await render();
   UpdateManager.disableServiceWorkerCache().catch(err => console.warn('cache cleanup skipped', err));
   try {
