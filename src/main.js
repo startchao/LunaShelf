@@ -1,7 +1,7 @@
 import './style.css';
 import { TtsPlaybackGeneration } from './tts-playback-generation.js';
 
-const APP_VERSION = '0.4.6-foreground-tts';
+const APP_VERSION = '0.4.7-cancel-race';
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -322,7 +322,7 @@ class SpeechQueue {
     this.segmentIndex = 0;
     this.activeSegment = null;
   }
-  resetSpeechEngine() {
+  invalidateSpeechState() {
     clearTimeout(this.startWatchdog);
     this.startWatchdog = null;
     const oldUtterance = this.currentUtterance;
@@ -334,19 +334,25 @@ class SpeechQueue {
       oldUtterance.onerror = null;
     }
     this.currentUtterance = null;
+    return generation;
+  }
+  cancelSpeechEngine() {
+    const generation = this.invalidateSpeechState();
     speechSynthesis.cancel();
     return generation;
   }
   play() {
     if (!state.currentBook) return toast('請先開啟一本 TXT');
     if (!this.isSupported()) return toast('這個瀏覽器不支援朗讀，請用 Safari/Edge/Chrome 測試');
+    if (this.state === 'playing') return;
     const startPara = this.resumePara
       ?? state.pages[state.currentPage]?.startPara
       ?? state.currentBook.progressPara
       ?? 0;
-    // Every explicit Play starts one clean generation. There is no automatic
-    // resume path and no delayed retry competing with this utterance.
-    const generation = this.resetSpeechEngine();
+    // Background, Pause, and Stop already canceled the old native session.
+    // Do not cancel again here: affected WebKit builds may deliver that cancel
+    // asynchronously and clear the fresh utterance queued below (WebKit #191745).
+    const generation = this.invalidateSpeechState();
     this.prepareFrom(startPara);
     this.resumePara = startPara;
     this.state = 'playing';
@@ -362,7 +368,7 @@ class SpeechQueue {
       if (speechSynthesis.speaking || speechSynthesis.pending) return;
       this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
       this.state = 'idle';
-      this.resetSpeechEngine();
+      this.invalidateSpeechState();
       this.activeSegment = null;
       this.audioSession.stop();
       wakeLock.release().catch(() => {});
@@ -388,7 +394,7 @@ class SpeechQueue {
     if (this.state !== 'playing') return;
     this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
     this.state = 'idle';
-    this.resetSpeechEngine();
+    this.cancelSpeechEngine();
     this.activeSegment = null;
     this.audioSession.stop();
     wakeLock.release().catch(() => {});
@@ -398,7 +404,7 @@ class SpeechQueue {
   pause() {
     this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
     this.state = 'paused';
-    this.resetSpeechEngine();
+    this.cancelSpeechEngine();
     this.activeSegment = null;
     this.audioSession.stop();
     wakeLock.release().catch(() => {});
@@ -407,7 +413,7 @@ class SpeechQueue {
   }
   stop() {
     this.state = 'idle';
-    this.resetSpeechEngine();
+    this.cancelSpeechEngine();
     this.resumePara = null;
     this.activeSegment = null;
     this.segments = [];
