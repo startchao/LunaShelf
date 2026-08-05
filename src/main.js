@@ -1,6 +1,7 @@
 import './style.css';
+import { TtsPlaybackGeneration } from './tts-playback-generation.js';
 
-const APP_VERSION = '0.4.5-auto-wake-lock';
+const APP_VERSION = '0.4.6-foreground-tts';
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -175,9 +176,6 @@ class WakeLockManager {
     renderTtsState();
     renderPanel();
   }
-  async restoreIfNeeded() {
-    if (tts?.state === 'playing') await this.request();
-  }
 }
 
 const wakeLock = new WakeLockManager();
@@ -211,7 +209,9 @@ class AudioSessionManager {
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({ title: book?.title || '月閣', artist: 'LunaShelf', album: 'TXT Reader' });
       navigator.mediaSession.playbackState = 'playing';
-      navigator.mediaSession.setActionHandler('play', () => tts.resumeAfterInterruption('media-session'));
+      // Media Session play is an explicit user/system command, so it follows the
+      // same clean-generation path as the on-screen Play button.
+      navigator.mediaSession.setActionHandler('play', () => tts.play());
       navigator.mediaSession.setActionHandler('pause', () => tts.pause());
       navigator.mediaSession.setActionHandler('stop', () => tts.stop());
       navigator.mediaSession.setActionHandler('seekbackward', () => turnPage(-1));
@@ -230,11 +230,10 @@ class SpeechQueue {
     this.segmentIndex = 0;
     this.currentUtterance = null;
     this.activeSegment = null;
+    this.resumePara = null;
+    this.playback = new TtsPlaybackGeneration();
     this.audioSession = new AudioSessionManager();
     this.startWatchdog = null;
-    this.resumeTimer = null;
-    this.startRetries = 0;
-    this.autoResumeWanted = false;
   }
   isSupported() { return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window; }
   pickVoice() {
@@ -266,7 +265,7 @@ class SpeechQueue {
     if (rest) out.push(rest);
     return out;
   }
-  makeUtterance(text, paraIdx) {
+  makeUtterance(text, paraIdx, generation) {
     const u = new SpeechSynthesisUtterance(text);
     // Force the OS/system default voice for every utterance (see note above pickVoice()).
     u.lang = 'zh-TW';
@@ -274,27 +273,38 @@ class SpeechQueue {
     u.pitch = 1;
     u.volume = state.ttsVolume;
     u.onstart = () => {
-      if (this.currentUtterance !== u) return;
-      this.startRetries = 0;
+      if (!this.playback.isCurrent(u, generation) || this.state !== 'playing') return;
       clearTimeout(this.startWatchdog);
       highlightPara(paraIdx);
     };
     u.onend = () => {
-      if (this.currentUtterance !== u || this.state !== 'playing') return;
+      if (!this.playback.clear(u, generation) || this.state !== 'playing') return;
       this.currentUtterance = null;
       this.activeSegment = null;
       this.nextPara = Math.max(this.nextPara, paraIdx + 1);
+      this.resumePara = this.nextPara;
       saveProgressFromPage();
-      this.speakNext();
+      this.speakNext(generation);
     };
     u.onerror = ev => {
-      if (this.currentUtterance !== u || this.state !== 'playing') return;
+      if (!this.playback.clear(u, generation) || this.state !== 'playing') return;
       console.warn('TTS error', ev.error || ev);
       this.currentUtterance = null;
-      if (['interrupted', 'canceled'].includes(ev.error)) return;
+      if (['interrupted', 'canceled'].includes(ev.error)) {
+        // External interruption ends this generation. Only a later explicit
+        // Play may create another utterance.
+        this.resumePara = paraIdx;
+        this.state = 'idle';
+        this.activeSegment = null;
+        this.audioSession.stop();
+        wakeLock.release().catch(() => {});
+        renderTtsState();
+        return;
+      }
       this.activeSegment = null;
       this.nextPara = Math.max(this.nextPara, paraIdx + 1);
-      this.speakNext();
+      this.resumePara = this.nextPara;
+      this.speakNext(generation);
     };
     return u;
   }
@@ -312,106 +322,97 @@ class SpeechQueue {
     this.segmentIndex = 0;
     this.activeSegment = null;
   }
+  resetSpeechEngine() {
+    clearTimeout(this.startWatchdog);
+    this.startWatchdog = null;
+    const oldUtterance = this.currentUtterance;
+    const generation = this.playback.begin();
+    // Detach first: iOS may dispatch canceled/interrupted after cancel() returns.
+    if (oldUtterance) {
+      oldUtterance.onstart = null;
+      oldUtterance.onend = null;
+      oldUtterance.onerror = null;
+    }
+    this.currentUtterance = null;
+    speechSynthesis.cancel();
+    return generation;
+  }
   play() {
     if (!state.currentBook) return toast('請先開啟一本 TXT');
     if (!this.isSupported()) return toast('這個瀏覽器不支援朗讀，請用 Safari/Edge/Chrome 測試');
-    if (this.state === 'playing') return this.resumeAfterInterruption('manual-play');
-    const startPara = this.state === 'paused'
-      ? this.nextPara
-      : (state.pages[state.currentPage]?.startPara ?? state.currentBook.progressPara ?? 0);
-    this.state = 'playing';
-    this.autoResumeWanted = true;
+    const startPara = this.resumePara
+      ?? state.pages[state.currentPage]?.startPara
+      ?? state.currentBook.progressPara
+      ?? 0;
+    // Every explicit Play starts one clean generation. There is no automatic
+    // resume path and no delayed retry competing with this utterance.
+    const generation = this.resetSpeechEngine();
     this.prepareFrom(startPara);
-    clearTimeout(this.startWatchdog);
-    this.currentUtterance = null;
-    speechSynthesis.cancel();
+    this.resumePara = startPara;
+    this.state = 'playing';
+    renderTtsState();
+    this.speakNext(generation); // Keep first speak inside the user activation.
     this.audioSession.start(state.currentBook).catch(err => console.warn('Audio session start blocked', err));
     wakeLock.request().catch(err => console.warn('wake lock request failed', err));
-    renderTtsState();
-    setTimeout(() => this.speakNext(), 60);
   }
-  armStartWatchdog() {
+  armStartWatchdog(utterance, generation) {
     clearTimeout(this.startWatchdog);
     this.startWatchdog = setTimeout(() => {
-      if (this.state !== 'playing' || speechSynthesis.speaking || speechSynthesis.pending) return;
-      if (this.startRetries < 2) {
-        this.startRetries += 1;
-        this.retryActiveSegment();
-      } else {
-        this.state = 'idle';
-        this.autoResumeWanted = false;
-        renderTtsState();
-        toast('朗讀未啟動；已重試，請再點一次播放');
-      }
-    }, 1200);
+      if (!this.playback.isCurrent(utterance, generation) || this.state !== 'playing') return;
+      if (speechSynthesis.speaking || speechSynthesis.pending) return;
+      this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
+      this.state = 'idle';
+      this.resetSpeechEngine();
+      this.activeSegment = null;
+      this.audioSession.stop();
+      wakeLock.release().catch(() => {});
+      renderTtsState();
+      toast('朗讀未啟動，請再點一次播放');
+    }, 1400);
   }
-  retryActiveSegment() {
-    if (!this.activeSegment || this.state !== 'playing') return;
-    const seg = this.activeSegment;
-    this.currentUtterance = null;
-    speechSynthesis.cancel();
-    setTimeout(() => {
-      if (this.state !== 'playing') return;
-      this.currentUtterance = this.makeUtterance(seg.text, seg.paraIdx);
-      speechSynthesis.speak(this.currentUtterance);
-      this.armStartWatchdog();
-    }, 120);
-  }
-  speakNext() {
+  speakNext(generation) {
     const book = state.currentBook;
-    if (this.state !== 'playing' || !book) return;
+    if (this.state !== 'playing' || generation !== this.playback.value || !book) return;
     const seg = this.segments[this.segmentIndex++];
     if (!seg) return this.stop();
     this.nextPara = seg.paraIdx;
+    this.resumePara = seg.paraIdx;
     this.activeSegment = seg;
-    this.currentUtterance = this.makeUtterance(seg.text, seg.paraIdx);
-    speechSynthesis.speak(this.currentUtterance);
-    this.armStartWatchdog();
+    const utterance = this.makeUtterance(seg.text, seg.paraIdx, generation);
+    this.currentUtterance = utterance;
+    if (!this.playback.set(utterance, generation)) return;
+    speechSynthesis.speak(utterance);
+    this.armStartWatchdog(utterance, generation);
   }
-  resumeAfterInterruption(reason = 'foreground') {
-    if (!state.currentBook || !this.isSupported()) return;
-    if (this.state === 'paused') return this.play();
-    if (this.state !== 'playing' && !this.autoResumeWanted) return;
-    this.state = 'playing';
-    this.autoResumeWanted = true;
-    this.audioSession.start(state.currentBook).catch(err => console.warn('Audio session resume blocked', reason, err));
-    wakeLock.request().catch(() => {});
-    renderTtsState();
-    if (speechSynthesis.paused) speechSynthesis.resume();
-    clearTimeout(this.resumeTimer);
-    this.resumeTimer = setTimeout(() => {
-      if (this.state !== 'playing') return;
-      if (speechSynthesis.speaking || speechSynthesis.pending) return;
-      if (this.activeSegment) this.retryActiveSegment();
-      else {
-        this.prepareFrom(this.nextPara || state.pages[state.currentPage]?.startPara || 0);
-        this.speakNext();
-      }
-    }, 180);
-  }
-  pause() {
-    this.state = 'paused';
-    this.autoResumeWanted = false;
+  suspendForBackground() {
+    if (this.state !== 'playing') return;
+    this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
+    this.state = 'idle';
+    this.resetSpeechEngine();
+    this.activeSegment = null;
     this.audioSession.stop();
     wakeLock.release().catch(() => {});
-    clearTimeout(this.startWatchdog);
-    clearTimeout(this.resumeTimer);
-    this.currentUtterance = null;
-    speechSynthesis.cancel();
+    renderTtsState();
+    saveProgressFromPage();
+  }
+  pause() {
+    this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
+    this.state = 'paused';
+    this.resetSpeechEngine();
+    this.activeSegment = null;
+    this.audioSession.stop();
+    wakeLock.release().catch(() => {});
     renderTtsState();
     saveProgressFromPage();
   }
   stop() {
     this.state = 'idle';
-    this.autoResumeWanted = false;
-    this.audioSession.stop();
-    wakeLock.release().catch(() => {});
-    clearTimeout(this.startWatchdog);
-    clearTimeout(this.resumeTimer);
-    this.currentUtterance = null;
+    this.resetSpeechEngine();
+    this.resumePara = null;
     this.activeSegment = null;
     this.segments = [];
-    speechSynthesis.cancel();
+    this.audioSession.stop();
+    wakeLock.release().catch(() => {});
     renderTtsState();
     saveProgressFromPage();
   }
@@ -802,9 +803,8 @@ async function boot() {
 }
 window.addEventListener('resize', () => { if (state.view === 'reader' && state.currentBook) repaginateKeepPosition(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    wakeLock.restoreIfNeeded().catch(() => {});
-    tts.resumeAfterInterruption('visibilitychange');
-  }
+  // Backgrounding invalidates speech. Foregrounding deliberately does
+  // nothing: the next utterance must come from an explicit Play action.
+  if (document.visibilityState === 'hidden') tts.suspendForBackground();
 });
 boot().catch(err => { console.error(err); toast(`啟動失敗：${err.message}`); });

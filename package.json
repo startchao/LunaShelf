@@ -1,1 +1,1 @@
-{"scripts":{"dev":"vite --host 0.0.0.0","build":"vite build","preview":"vite preview --host 0.0.0.0","check":"node --check src/main.js"},"dependencies":{"@vitejs/plugin-legacy":"latest","vite":"latest"},"devDependencies":{}}
+{"type":"module","scripts":{"dev":"vite --host 0.0.0.0","build":"vite build","preview":"vite preview --host 0.0.0.0","test":"node --test","check":"node --check src/main.js && node --check src/tts-playback-generation.js && node --test"},"dependencies":{"@vitejs/plugin-legacy":"latest","vite":"latest"},"devDependencies":{}}
