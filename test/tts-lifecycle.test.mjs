@@ -59,3 +59,10 @@ test('pause, stop, and background suspension invalidate before canceling speech'
   for (const method of [pause, stop, background]) assert.match(method, /cancelSpeechEngine\(\)/);
   assert.doesNotMatch(pause + stop + background, /\bplay\(\)|speakNext\(/);
 });
+
+test('TTS speed control supports 3.5x and clamps persisted values', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(source, /const TTS_RATE_MAX = 3\.5;/);
+  assert.match(source, /id="speechRate" min="\$\{TTS_RATE_MIN\}" max="\$\{TTS_RATE_MAX\}"/);
+  assert.match(source, /u\.rate = clampSpeechRate\(/);
+});
