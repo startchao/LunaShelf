@@ -1,9 +1,15 @@
 import './style.css';
 import { TtsPlaybackGeneration } from './tts-playback-generation.js';
 
-const APP_VERSION = '0.4.8-tts-speed';
+const APP_VERSION = '0.4.9-ios27-tts-diagnostics';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 3.5;
+const TTS_DIAG_PRESETS = {
+  raw16: { label: '原始 1.6×', shown: 1.6, actual: 1.6 },
+  raw17: { label: '原始 1.7×', shown: 1.7, actual: 1.7 },
+  fix16: { label: '補償 1.6×', shown: 1.6, actual: 2.0 },
+  fix17: { label: '補償 1.7×', shown: 1.7, actual: 2.2 },
+};
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -271,16 +277,20 @@ class SpeechQueue {
     const u = new SpeechSynthesisUtterance(text);
     // Force the OS/system default voice for every utterance (see note above pickVoice()).
     u.lang = 'zh-TW';
-    u.rate = clampSpeechRate(localStorage.getItem('speechRate'));
+    const rateConfig = getSpeechRateConfig();
+    u.rate = clampSpeechRate(rateConfig.actual);
     u.pitch = 1;
     u.volume = state.ttsVolume;
+    let startedAt = 0;
     u.onstart = () => {
       if (!this.playback.isCurrent(u, generation) || this.state !== 'playing') return;
       clearTimeout(this.startWatchdog);
+      startedAt = performance.now();
       highlightPara(paraIdx);
     };
     u.onend = () => {
       if (!this.playback.clear(u, generation) || this.state !== 'playing') return;
+      saveTtsDiagnostic(rateConfig, startedAt ? (performance.now() - startedAt) / 1000 : 0);
       this.currentUtterance = null;
       this.activeSegment = null;
       this.nextPara = Math.max(this.nextPara, paraIdx + 1);
@@ -290,6 +300,7 @@ class SpeechQueue {
     };
     u.onerror = ev => {
       if (!this.playback.clear(u, generation) || this.state !== 'playing') return;
+      saveTtsDiagnostic(rateConfig, 0, ev.error || 'unknown');
       console.warn('TTS error', ev.error || ev);
       this.currentUtterance = null;
       if (['interrupted', 'canceled'].includes(ev.error)) {
@@ -453,6 +464,29 @@ function clampTtsVolume(value) {
 }
 function clampSpeechRate(value) {
   return Math.max(TTS_RATE_MIN, Math.min(TTS_RATE_MAX, Number(value) || 1));
+}
+function getSpeechRateConfig() {
+  const preset = TTS_DIAG_PRESETS[localStorage.getItem('ttsDiagPreset')];
+  const normal = clampSpeechRate(localStorage.getItem('speechRate'));
+  return preset || { label: '正常模式', shown: normal, actual: normal };
+}
+function saveTtsDiagnostic(config, seconds, error = '') {
+  if (!localStorage.getItem('ttsDiagPreset')) return;
+  localStorage.setItem('ttsDiagLast', error
+    ? `${config.label}｜實際 ${config.actual.toFixed(1)}×｜錯誤：${error}`
+    : `${config.label}｜實際 ${config.actual.toFixed(1)}×｜本段 ${seconds.toFixed(1)} 秒｜系統預設語音`);
+}
+function setTtsDiagnostic(preset) {
+  if (preset && TTS_DIAG_PRESETS[preset]) {
+    if (!localStorage.getItem('ttsDiagPreset')) localStorage.setItem('ttsDiagRestoreRate', String(clampSpeechRate(localStorage.getItem('speechRate'))));
+    localStorage.setItem('ttsDiagPreset', preset);
+  } else {
+    const restore = localStorage.getItem('ttsDiagRestoreRate');
+    if (restore) localStorage.setItem('speechRate', restore);
+    localStorage.removeItem('ttsDiagPreset');
+    localStorage.removeItem('ttsDiagRestoreRate');
+  }
+  renderPanel();
 }
 function setTtsVolume(value, persist = true) {
   state.ttsVolume = clampTtsVolume(value);
@@ -719,8 +753,12 @@ function panelTemplate() {
   const paragraphSpacing = state.paragraphSpacing.toFixed(1);
   const speechVolume = clampTtsVolume(state.ttsVolume);
   const speechRate = clampSpeechRate(localStorage.getItem('speechRate'));
+  const diagPreset = localStorage.getItem('ttsDiagPreset') || '';
+  const diagConfig = getSpeechRateConfig();
+  const diagLast = localStorage.getItem('ttsDiagLast') || '尚無量測；套用後關閉設定並正常播放一段。';
+  const diagButtons = Object.entries(TTS_DIAG_PRESETS).map(([key, p]) => `<button class="font-opt ${diagPreset === key ? 'on' : ''}" data-tts-diag="${key}">${p.label} → ${p.actual.toFixed(1)}×</button>`).join('');
   const sleepBtns = [10, 30, 50, 60].map(min => `<button class="slp-bt ${sleepLeft === min ? 'on' : ''}" data-sleep="${min}">${min}分</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">新版 iOS 的實際語速可能依系統語音而異；最高可調至 3.5×。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">新版 iOS 的實際語速可能依系統語音而異；最高可調至 3.5×。</div></div><div class="sg"><div class="sg-lbl">iOS 27 語速診斷（測試）</div><div class="font-opts">${diagButtons}<button class="font-opt ${diagPreset ? '' : 'on'}" data-tts-diag="off">關閉診斷</button></div><div class="sg-hint">目前：${esc(diagConfig.label)}｜顯示 ${diagConfig.shown.toFixed(1)}×｜實際送出 ${diagConfig.actual.toFixed(1)}×</div><div class="sg-hint">${esc(diagLast)}</div><div class="sg-hint">套用後關閉設定並按播放；結果會在每段結束後保存。關閉診斷會恢復原語速。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -750,6 +788,7 @@ function bindPanelEvents() {
   $$('[data-font]').forEach(btn => btn.addEventListener('click', () => { state.fontFamily = btn.dataset.font; localStorage.setItem('fontFamily', state.fontFamily); closePanel(); repaginateKeepPosition(); }));
   $$('[data-font-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('fonts', btn.dataset.fontDelete); if (state.fontFamily === `custom-${btn.dataset.fontDelete}`) { state.fontFamily = 'serif'; localStorage.setItem('fontFamily', state.fontFamily); } state.fonts = await DB.all('fonts'); renderPanel(); if (state.currentBook) repaginateKeepPosition(); toast('字體已刪除'); }));
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
+  $$('[data-tts-diag]').forEach(btn => btn.addEventListener('click', () => setTtsDiagnostic(btn.dataset.ttsDiag)));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
   $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
   $('#speechVolume')?.addEventListener('input', e => setTtsVolume(e.target.value));
