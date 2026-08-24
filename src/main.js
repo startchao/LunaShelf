@@ -1,14 +1,16 @@
 import './style.css';
 import { TtsPlaybackGeneration } from './tts-playback-generation.js';
 
-const APP_VERSION = '0.4.9-ios27-tts-diagnostics';
+const APP_VERSION = '0.4.10-ios27-tts-fine-calibration';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 3.5;
 const TTS_DIAG_PRESETS = {
   raw16: { label: '原始 1.6×', shown: 1.6, actual: 1.6 },
   raw17: { label: '原始 1.7×', shown: 1.7, actual: 1.7 },
   fix16: { label: '補償 1.6×', shown: 1.6, actual: 2.0 },
-  fix17: { label: '補償 1.7×', shown: 1.7, actual: 2.2 },
+  fine21: { label: '補償 1.7×｜實際 2.1×', shown: 1.7, actual: 2.1 },
+  fine22: { label: '補償 1.7×｜實際 2.2×', shown: 1.7, actual: 2.2 },
+  fine23: { label: '補償 1.7×｜實際 2.3×', shown: 1.7, actual: 2.3 },
 };
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
