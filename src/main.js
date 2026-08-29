@@ -1,9 +1,17 @@
 import './style.css';
 import { TtsPlaybackGeneration } from './tts-playback-generation.js';
 
-const APP_VERSION = '0.4.8-tts-speed';
+const APP_VERSION = '0.4.12-fast-voice';
 const TTS_RATE_MIN = 0.5;
-const TTS_RATE_MAX = 3.5;
+const TTS_RATE_MAX = 2.5;
+const TTS_RATE_PRESET_VERSION = 'v0.4.12';
+if (localStorage.getItem('ttsRatePresetVersion') !== TTS_RATE_PRESET_VERSION) {
+  localStorage.setItem('speechRate', String(TTS_RATE_MAX));
+  localStorage.removeItem('ttsDiagPreset');
+  localStorage.removeItem('ttsDiagRestoreRate');
+  localStorage.removeItem('ttsDiagLast');
+  localStorage.setItem('ttsRatePresetVersion', TTS_RATE_PRESET_VERSION);
+}
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('fontSize', '18');
@@ -236,22 +244,17 @@ class SpeechQueue {
     this.playback = new TtsPlaybackGeneration();
     this.audioSession = new AudioSessionManager();
     this.startWatchdog = null;
+    this.sessionVoice = null;
   }
   isSupported() { return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window; }
   pickVoice() {
     const voices = speechSynthesis.getVoices();
-    return voices.find(v => /zh-TW|zh_Hant|cmn-Hant|Taiwan/i.test(`${v.lang} ${v.name}`))
+    const savedVoiceURI = localStorage.getItem('speechVoiceURI');
+    if (savedVoiceURI === '__auto__') return null;
+    return voices.find(v => savedVoiceURI && v.voiceURI === savedVoiceURI)
+      || voices.find(v => /zh-TW|zh_Hant|cmn-Hant|Taiwan/i.test(`${v.lang} ${v.name}`))
       || voices.find(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
   }
-  // NOTE: pickVoice() is kept for possible future manual voice selection,
-  // but is intentionally NOT called from makeUtterance() below anymore.
-  // Reason: speechSynthesis.getVoices() returns an incomplete list on iOS
-  // until the 'voiceschanged' event fires. Calling pickVoice() fresh on
-  // every paragraph meant the first utterance(s) got no matching voice
-  // (falls back to the OS default), then once the full voice list loaded,
-  // later utterances matched a specific voice (e.g. "Mei-Jia") — causing
-  // the voice to audibly switch mid-session. Leaving u.voice unset makes
-  // every utterance consistently use the OS default voice instead.
   splitText(text) {
     const src = text.trim();
     if (src.length <= this.maxChars) return [src];
@@ -269,8 +272,8 @@ class SpeechQueue {
   }
   makeUtterance(text, paraIdx, generation) {
     const u = new SpeechSynthesisUtterance(text);
-    // Force the OS/system default voice for every utterance (see note above pickVoice()).
     u.lang = 'zh-TW';
+    if (this.sessionVoice) u.voice = this.sessionVoice;
     u.rate = clampSpeechRate(localStorage.getItem('speechRate'));
     u.pitch = 1;
     u.volume = state.ttsVolume;
@@ -355,6 +358,8 @@ class SpeechQueue {
     // Do not cancel again here: affected WebKit builds may deliver that cancel
     // asynchronously and clear the fresh utterance queued below (WebKit #191745).
     const generation = this.invalidateSpeechState();
+    // Resolve once per explicit Play so iOS cannot switch voices mid-session.
+    this.sessionVoice = this.pickVoice();
     this.prepareFrom(startPara);
     this.resumePara = startPara;
     this.state = 'playing';
@@ -706,6 +711,13 @@ function readerTemplate() {
       <div id="panelRoot"></div>
     </section>`;
 }
+function ttsVoiceOptions() {
+  const selected = localStorage.getItem('speechVoiceURI') || '';
+  const voices = 'speechSynthesis' in window ? speechSynthesis.getVoices() : [];
+  const chineseVoices = voices.filter(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
+  const options = chineseVoices.map(v => `<option value="${esc(v.voiceURI)}" ${selected === v.voiceURI ? 'selected' : ''}>${esc(v.name)}（${esc(v.lang)}）</option>`).join('');
+  return `<option value="" ${selected === '' ? 'selected' : ''}>高速中文（建議）</option><option value="__auto__" ${selected === '__auto__' ? 'selected' : ''}>系統自動聲線</option>${options}`;
+}
 function panelTemplate() {
   if (!state.panel) return '';
   if (state.panel === 'toc') {
@@ -720,7 +732,7 @@ function panelTemplate() {
   const speechVolume = clampTtsVolume(state.ttsVolume);
   const speechRate = clampSpeechRate(localStorage.getItem('speechRate'));
   const sleepBtns = [10, 30, 50, 60].map(min => `<button class="slp-bt ${sleepLeft === min ? 'on' : ''}" data-sleep="${min}">${min}分</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">新版 iOS 的實際語速可能依系統語音而異；最高可調至 3.5×。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">顯示值會直接套用為實際朗讀速度；指定中文聲線後，最高可調至 2.5×。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">「高速中文」沿用書閣的中文聲線優先策略；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -752,6 +764,10 @@ function bindPanelEvents() {
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
   $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
+  $('#speechVoice')?.addEventListener('change', e => {
+    if (e.target.value) localStorage.setItem('speechVoiceURI', e.target.value);
+    else localStorage.removeItem('speechVoiceURI');
+  });
   $('#speechVolume')?.addEventListener('input', e => setTtsVolume(e.target.value));
   $('#lineHeight')?.addEventListener('input', e => {
     state.lineHeight = Number(e.target.value);
@@ -801,6 +817,12 @@ async function render() {
 async function boot() {
   setTheme(state.theme);
   localStorage.removeItem('keepAwake');
+  if ('speechSynthesis' in window) {
+    speechSynthesis.getVoices();
+    speechSynthesis.addEventListener?.('voiceschanged', () => {
+      if (state.panel === 'settings') renderPanel();
+    });
+  }
   await render();
   UpdateManager.disableServiceWorkerCache().catch(err => console.warn('cache cleanup skipped', err));
   try {

@@ -60,9 +60,12 @@ test('pause, stop, and background suspension invalidate before canceling speech'
   assert.doesNotMatch(pause + stop + background, /\bplay\(\)|speakNext\(/);
 });
 
-test('TTS speed control supports 3.5x and clamps persisted values', async () => {
+test('TTS speed supports 2.5x and locks a preferred Chinese voice per play session', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.match(source, /const TTS_RATE_MAX = 3\.5;/);
+  assert.match(source, /const TTS_RATE_MAX = 2\.5;/);
   assert.match(source, /id="speechRate" min="\$\{TTS_RATE_MIN\}" max="\$\{TTS_RATE_MAX\}"/);
   assert.match(source, /u\.rate = clampSpeechRate\(/);
+  assert.match(source, /this\.sessionVoice = this\.pickVoice\(\)/);
+  assert.match(source, /if \(this\.sessionVoice\) u\.voice = this\.sessionVoice/);
+  assert.ok(source.includes("voices.find(v => /zh-TW|zh_Hant|cmn-Hant|Taiwan/i.test(`${v.lang} ${v.name}`))"));
 });
