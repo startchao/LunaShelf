@@ -7,8 +7,9 @@ import {
   markdownToBookData,
   stripBookExtension,
 } from './markdown.js';
+import { getTableLayoutPresentation, normalizeTableLayoutMode } from './table-layout.js';
 
-const APP_VERSION = '0.5.0-markdown';
+const APP_VERSION = '0.5.1-markdown-table';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 2.5;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -43,6 +44,7 @@ const state = {
   fontSize: Number(localStorage.getItem('fontSize') || 18),
   lineHeight: Number(localStorage.getItem('lineHeight') || 1.3),
   paragraphSpacing: Number(localStorage.getItem('paragraphSpacing') || 0.5),
+  tableLayoutMode: normalizeTableLayoutMode(localStorage.getItem('tableLayoutMode')),
   ttsVolume: Number(localStorage.getItem('ttsVolume') || 1),
   wakeLockStatus: 'idle',
   view: 'library',
@@ -542,6 +544,22 @@ function applyReaderTypography(node) {
   node.style.setProperty('--para-gap', getParagraphGapEm());
 }
 
+function applyTableLayout(node) {
+  if (!node) return;
+  const presentation = getTableLayoutPresentation(state.tableLayoutMode);
+  node.classList.remove('table-layout-standard', 'table-layout-bilingual');
+  node.classList.add(presentation.className);
+  node.dataset.tableLayout = presentation.mode;
+}
+
+function setTableLayoutMode(value) {
+  state.tableLayoutMode = normalizeTableLayoutMode(value);
+  localStorage.setItem('tableLayoutMode', state.tableLayoutMode);
+  $$('.rpage').forEach(applyTableLayout);
+  renderPanel();
+  if (state.currentBook) repaginateKeepPosition();
+}
+
 function makeParagraph(text, idx, block) {
   return createBookBlockElement(block || { type: 'paragraph', text }, idx);
 }
@@ -549,6 +567,7 @@ function makeParagraph(text, idx, block) {
 function createPaginationProbe() {
   const shell = document.createElement('article');
   shell.className = 'rpage page-probe';
+  applyTableLayout(shell);
   shell.setAttribute('aria-hidden', 'true');
   shell.style.width = `${window.innerWidth}px`;
   shell.style.height = `${window.innerHeight}px`;
@@ -633,8 +652,8 @@ function toggleToolbar(force) {
 }
 function handleReaderTap(e) {
   if (!state.currentBook) return;
+  if (e.target.closest('.reader-head, .reader-controls, .pback, .md-table, a, button, input, select, label')) return;
   if (e.cancelable) e.preventDefault();
-  if (e.target.closest('.reader-head, .reader-controls, .pback, button, input, select, label')) return;
   const now = Date.now();
   if (now - state.lastTapAt < 260) return;
   state.lastTapAt = now;
@@ -715,10 +734,11 @@ function bookRow(book) {
 }
 function readerTemplate() {
   const book = state.currentBook;
+  const tableLayout = getTableLayoutPresentation(state.tableLayoutMode);
   return `
     <section class="reader-view">
       <header class="reader-head ${state.toolbarOn ? 'show' : ''}"><button class="rbk" id="backBtn">◀ 書庫</button><div class="rtitle">${esc(book.title)}</div><div class="rtool"><button class="ribt" id="tocBtn">☰</button><button class="ribt" id="setBtn">⚙</button></div></header>
-      <main class="rbook" id="rbook"><div class="tap-zone zone-left" id="zoneLeft"></div><div class="tap-zone zone-mid" id="zoneMid"></div><div class="tap-zone zone-right" id="zoneRight"></div><article class="rpage"><div class="rp-body"></div><footer class="rp-foot"><span class="rp-num">…</span></footer></article></main>
+      <main class="rbook" id="rbook"><div class="tap-zone zone-left" id="zoneLeft"></div><div class="tap-zone zone-mid" id="zoneMid"></div><div class="tap-zone zone-right" id="zoneRight"></div><article class="rpage ${tableLayout.className}" data-table-layout="${tableLayout.mode}"><div class="rp-body"></div><footer class="rp-foot"><span class="rp-num">…</span></footer></article></main>
       <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay" aria-label="播放/暫停">▶</button><button class="rfbt" id="rfStop" aria-label="停止">⏹</button><button class="rfbt" id="sleepBtn" aria-label="定時關閉">⏱</button><div class="rf-div"></div><button class="rfbt" id="bottomTocBtn" aria-label="目錄">☰</button><button class="rfbt" id="bottomSetBtn" aria-label="設定">⚙</button><button class="rftog" id="themeBtn" aria-label="日夜切換">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
       <div id="panelRoot"></div>
     </section>`;
@@ -744,7 +764,7 @@ function panelTemplate() {
   const speechVolume = clampTtsVolume(state.ttsVolume);
   const speechRate = clampSpeechRate(localStorage.getItem('speechRate'));
   const sleepBtns = [10, 30, 50, 60].map(min => `<button class="slp-bt ${sleepLeft === min ? 'on' : ''}" data-sleep="${min}">${min}分</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">顯示值會直接套用為實際朗讀速度；指定中文聲線後，最高可調至 2.5×。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">「高速中文」沿用書閣的中文聲線優先策略；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">表格版面</div><div class="font-opts table-layout-opts"><button class="font-opt ${state.tableLayoutMode === 'standard' ? 'on' : ''}" data-table-layout-mode="standard" aria-pressed="${state.tableLayoutMode === 'standard'}">標準表格</button><button class="font-opt ${state.tableLayoutMode === 'bilingual' ? 'on' : ''}" data-table-layout-mode="bilingual" aria-pressed="${state.tableLayoutMode === 'bilingual'}">中英對照</button></div><div class="sg-hint">中英對照會將兩欄表格在手機顯示為上下對照卡片，寬螢幕則並排顯示。</div></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">顯示值會直接套用為實際朗讀速度；指定中文聲線後，最高可調至 2.5×。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">「高速中文」沿用書閣的中文聲線優先策略；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -772,6 +792,7 @@ function bindPanelEvents() {
   $('#panelX')?.addEventListener('click', closePanel);
   $$('[data-chapter]').forEach(el => el.addEventListener('click', () => jumpChapter(Number(el.dataset.chapter))));
   $$('[data-font]').forEach(btn => btn.addEventListener('click', () => { state.fontFamily = btn.dataset.font; localStorage.setItem('fontFamily', state.fontFamily); closePanel(); repaginateKeepPosition(); }));
+  $$('[data-table-layout-mode]').forEach(btn => btn.addEventListener('click', () => setTableLayoutMode(btn.dataset.tableLayoutMode)));
   $$('[data-font-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('fonts', btn.dataset.fontDelete); if (state.fontFamily === `custom-${btn.dataset.fontDelete}`) { state.fontFamily = 'serif'; localStorage.setItem('fontFamily', state.fontFamily); } state.fonts = await DB.all('fonts'); renderPanel(); if (state.currentBook) repaginateKeepPosition(); toast('字體已刪除'); }));
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });

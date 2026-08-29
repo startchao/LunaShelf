@@ -5,9 +5,14 @@ import {
   isMarkdownFileName,
   isSupportedBookFileName,
   markdownToBookData,
+  parseMarkdownInline,
   stripBookExtension,
   stripMarkdownInline,
 } from '../src/markdown.js';
+import {
+  getTableLayoutPresentation,
+  normalizeTableLayoutMode,
+} from '../src/table-layout.js';
 
 class FakeClassList {
   constructor() { this.values = []; }
@@ -29,7 +34,10 @@ class FakeElement {
   get textContent() { return this.children.length ? this.children.map(child => child.textContent).join('') : this._textContent; }
 }
 
-const fakeDocument = { createElement: tag => new FakeElement(tag) };
+const fakeDocument = {
+  createElement: tag => new FakeElement(tag),
+  createTextNode: text => ({ nodeType: 3, textContent: String(text) }),
+};
 
 test('book import extensions accept TXT and both Markdown suffixes only', () => {
   for (const name of ['novel.txt', 'notes.md', 'BOOK.MARKDOWN']) assert.equal(isSupportedBookFileName(name), true);
@@ -116,4 +124,96 @@ test('setext headings and multiline paragraphs are supported', () => {
     ['paragraph', '第一行 第二行', undefined],
     ['heading', '副標題', 2],
   ]);
+});
+
+test('GFM tables parse alignment, escaped pipes, code pipes, and uneven rows', () => {
+  const source = [
+    '| Name | Value | Notes |',
+    '| :--- | ---: | :---: |',
+    '| alpha | 12 | escaped \\| pipe |',
+    '| beta | `a | b` | **bold** and [site](https://example.com) |',
+    '| short |',
+  ].join('\n');
+  const parsed = markdownToBookData(source);
+
+  assert.equal(parsed.blocks.length, 1);
+  const table = parsed.blocks[0];
+  assert.equal(table.type, 'table');
+  assert.deepEqual(table.alignments, ['left', 'right', 'center']);
+  assert.deepEqual(table.header.map(cell => cell.text), ['Name', 'Value', 'Notes']);
+  assert.deepEqual(table.rows[0].map(cell => cell.text), ['alpha', '12', 'escaped | pipe']);
+  assert.deepEqual(table.rows[1].map(cell => cell.text), ['beta', 'a | b', 'bold and site']);
+  assert.deepEqual(table.rows[2].map(cell => cell.text), ['short', '', '']);
+  assert.equal(parsed.paragraphs[0], 'Name；Value；Notes。alpha；12；escaped | pipe。beta；a | b；bold and site。short');
+});
+
+test('long tables are split into page-friendly chunks with repeated headers', () => {
+  const rows = Array.from({ length: 13 }, (_, i) => `| row ${i + 1} | ${i + 1} |`);
+  const parsed = markdownToBookData(['| Item | Count |', '| --- | ---: |', ...rows].join('\n'));
+  assert.deepEqual(parsed.blocks.map(block => block.rows.length), [5, 5, 3]);
+  assert.ok(parsed.blocks.every(block => block.type === 'table'));
+  assert.ok(parsed.blocks.every(block => block.header[0].text === 'Item'));
+  assert.deepEqual(parsed.blocks.map(block => block.tableChunk), [0, 1, 2]);
+});
+
+test('table rendering creates semantic safe DOM and never uses imported HTML', () => {
+  const parsed = markdownToBookData([
+    '| **Heading** | Link |',
+    '| --- | --- |',
+    '| <img src=x onerror=alert(1)>safe | [open](javascript:alert(1)) |',
+  ].join('\n'));
+  const wrapper = createBookBlockElement(parsed.blocks[0], 4, fakeDocument);
+  const table = wrapper.children[0];
+
+  assert.equal(wrapper.tagName, 'DIV');
+  assert.equal(table.tagName, 'TABLE');
+  assert.equal(table.children[0].tagName, 'THEAD');
+  assert.equal(table.children[1].tagName, 'TBODY');
+  assert.equal(table.children[0].children[0].children[0].tagName, 'TH');
+  assert.equal(table.children[1].children[0].children[0].tagName, 'TD');
+  assert.equal(table.children[1].children[0].children[0].textContent, 'safe');
+  assert.equal(table.children[1].children[0].children[1].textContent, 'open');
+  assert.equal(table.children[1].children[0].children[1].children[0].tagName, 'SPAN');
+  assert.equal(wrapper.dataset.paraIdx, '4');
+  assert.equal(wrapper.classList.values.includes('md-table-bilingual'), true);
+  assert.equal(table.children[1].children[0].children[0].attributes['data-label'], 'Heading');
+  assert.equal(table.children[1].children[0].children[1].attributes['data-label'], 'Link');
+
+  const threeColumn = markdownToBookData('| A | B | C |\n| --- | --- | --- |\n| 1 | 2 | 3 |');
+  const standardWrapper = createBookBlockElement(threeColumn.blocks[0], 5, fakeDocument);
+  assert.equal(standardWrapper.classList.values.includes('md-table-bilingual'), false);
+});
+
+test('bilingual table layout mode is deterministic and defaults safely', () => {
+  assert.equal(normalizeTableLayoutMode('bilingual'), 'bilingual');
+  for (const value of ['standard', '', null, 'cards']) {
+    assert.equal(normalizeTableLayoutMode(value), 'standard');
+  }
+  assert.deepEqual(getTableLayoutPresentation('bilingual'), {
+    mode: 'bilingual',
+    className: 'table-layout-bilingual',
+  });
+  assert.deepEqual(getTableLayoutPresentation('unexpected'), {
+    mode: 'standard',
+    className: 'table-layout-standard',
+  });
+});
+
+test('safe inline renderer preserves emphasis, code, and allowed links', () => {
+  const nodes = parseMarkdownInline('A **strong** *em* ~~gone~~ `x < y` [safe](https://example.com) <script>bad()</script>');
+  assert.deepEqual(nodes.map(node => node.type), ['text', 'strong', 'text', 'em', 'text', 'del', 'text', 'code', 'text', 'link', 'text']);
+
+  const paragraph = createBookBlockElement({
+    type: 'paragraph',
+    text: 'A strong em gone x < y safe bad()',
+    inline: 'A **strong** *em* ~~gone~~ `x < y` [safe](https://example.com) <script>bad()</script>',
+  }, 0, fakeDocument);
+  assert.equal(paragraph.children.some(child => child.tagName === 'STRONG'), true);
+  assert.equal(paragraph.children.some(child => child.tagName === 'EM'), true);
+  assert.equal(paragraph.children.some(child => child.tagName === 'DEL'), true);
+  assert.equal(paragraph.children.some(child => child.tagName === 'CODE'), true);
+  const link = paragraph.children.find(child => child.tagName === 'A');
+  assert.equal(link.attributes.href, 'https://example.com');
+  assert.equal(link.attributes.rel, 'noopener noreferrer');
+  assert.equal(paragraph.textContent, 'A strong em gone x < y safe bad()');
 });
