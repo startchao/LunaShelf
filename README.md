@@ -18,7 +18,8 @@ TXT-first personal novel reader for Tony.
 - IndexedDB local book storage
 - Light/dark theme
 - Custom font import
-- Font size / line height controls
+- Separate, persistent novel and English reading layouts (font, size, line height, paragraph spacing, margins, and table mode)
+- English comfort typography with left alignment and an iPhone-friendly serif stack
 - Queue-based Chinese TTS
 - Silent HTMLAudioElement + Media Session setup to improve routing to system/car audio while CarPlay is active
 - Manual force-refresh / cache clearing controls

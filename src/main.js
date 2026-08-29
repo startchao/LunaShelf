@@ -8,8 +8,14 @@ import {
   stripBookExtension,
 } from './markdown.js';
 import { getTableLayoutPresentation, normalizeTableLayoutMode } from './table-layout.js';
+import {
+  loadReadingPresets,
+  readingMarginCss,
+  saveReadingPreset,
+  setActiveReadingPreset,
+} from './reading-presets.js';
 
-const APP_VERSION = '0.5.1-markdown-table';
+const APP_VERSION = '0.6.0-reading-presets';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 2.5;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -22,13 +28,15 @@ if (localStorage.getItem('ttsRatePresetVersion') !== TTS_RATE_PRESET_VERSION) {
 }
 const LAYOUT_PRESET_VERSION = 'v0.4.0';
 if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
-  localStorage.setItem('fontSize', '18');
-  localStorage.setItem('lineHeight', '1.3');
-  localStorage.setItem('paragraphSpacing', '0.5');
+  if (!localStorage.getItem('fontSize')) localStorage.setItem('fontSize', '18');
+  if (!localStorage.getItem('lineHeight')) localStorage.setItem('lineHeight', '1.3');
+  if (!localStorage.getItem('paragraphSpacing')) localStorage.setItem('paragraphSpacing', '0.5');
   localStorage.setItem('layoutPresetVersion', LAYOUT_PRESET_VERSION);
 }
 const DB_NAME = 'lunashelf-db';
 const DB_VERSION = 1;
+const initialReadingPresets = loadReadingPresets(localStorage);
+const initialReadingLayout = initialReadingPresets.presets[initialReadingPresets.activeId];
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -40,11 +48,14 @@ const state = {
   fonts: [],
   currentBook: null,
   theme: localStorage.getItem('theme') || 'light',
-  fontFamily: localStorage.getItem('fontFamily') || 'serif',
-  fontSize: Number(localStorage.getItem('fontSize') || 18),
-  lineHeight: Number(localStorage.getItem('lineHeight') || 1.3),
-  paragraphSpacing: Number(localStorage.getItem('paragraphSpacing') || 0.5),
-  tableLayoutMode: normalizeTableLayoutMode(localStorage.getItem('tableLayoutMode')),
+  readingPresetMode: initialReadingPresets.activeId,
+  readingPresets: initialReadingPresets.presets,
+  fontFamily: initialReadingLayout.fontFamily,
+  fontSize: initialReadingLayout.fontSize,
+  lineHeight: initialReadingLayout.lineHeight,
+  paragraphSpacing: initialReadingLayout.paragraphSpacing,
+  marginPreset: initialReadingLayout.marginPreset,
+  tableLayoutMode: normalizeTableLayoutMode(initialReadingLayout.tableLayoutMode),
   ttsVolume: Number(localStorage.getItem('ttsVolume') || 1),
   wakeLockStatus: 'idle',
   view: 'library',
@@ -120,7 +131,7 @@ class FontManager {
     await DB.put('fonts', font);
     await FontManager.activate(font);
     state.fontFamily = `custom-${font.id}`;
-    localStorage.setItem('fontFamily', state.fontFamily);
+    persistCurrentReadingLayout();
     state.fonts = await DB.all('fonts');
     return font;
   }
@@ -465,6 +476,7 @@ function setTheme(theme) {
 function getFontCss() {
   if (state.fontFamily === 'system') return 'var(--font-system)';
   if (state.fontFamily === 'serif') return 'var(--font-serif)';
+  if (state.fontFamily === 'english-serif') return 'var(--font-english-serif)';
   return `'${state.fontFamily}'`;
 }
 function getParagraphGapEm() {
@@ -542,6 +554,44 @@ function applyReaderTypography(node) {
   node.style.lineHeight = String(state.lineHeight);
   node.style.fontFamily = getFontCss();
   node.style.setProperty('--para-gap', getParagraphGapEm());
+  node.classList.toggle('reading-preset-english', state.readingPresetMode === 'english');
+  if (state.readingPresetMode === 'english') node.setAttribute('lang', 'en');
+  else node.removeAttribute('lang');
+  const margin = readingMarginCss(state.marginPreset);
+  node.style.setProperty('--page-margin-x', margin);
+  node.closest('.rpage')?.style.setProperty('--page-margin-x', margin);
+}
+
+function currentReadingLayout() {
+  return {
+    fontFamily: state.fontFamily,
+    fontSize: state.fontSize,
+    lineHeight: state.lineHeight,
+    paragraphSpacing: state.paragraphSpacing,
+    marginPreset: state.marginPreset,
+    tableLayoutMode: state.tableLayoutMode,
+  };
+}
+
+function persistCurrentReadingLayout() {
+  const saved = saveReadingPreset(localStorage, state.readingPresetMode, currentReadingLayout());
+  state.readingPresets[state.readingPresetMode] = saved;
+  localStorage.setItem('fontFamily', saved.fontFamily);
+  localStorage.setItem('fontSize', String(saved.fontSize));
+  localStorage.setItem('lineHeight', String(saved.lineHeight));
+  localStorage.setItem('paragraphSpacing', String(saved.paragraphSpacing));
+  localStorage.setItem('tableLayoutMode', saved.tableLayoutMode);
+}
+
+function applyReadingPresetMode(value) {
+  const id = setActiveReadingPreset(localStorage, value);
+  const preset = state.readingPresets[id];
+  state.readingPresetMode = id;
+  Object.assign(state, preset);
+  persistCurrentReadingLayout();
+  renderPanel();
+  if (state.currentBook) repaginateKeepPosition();
+  toast(id === 'english' ? '已套用英文舒讀版面' : '已套用小說閱讀版面');
 }
 
 function applyTableLayout(node) {
@@ -554,7 +604,7 @@ function applyTableLayout(node) {
 
 function setTableLayoutMode(value) {
   state.tableLayoutMode = normalizeTableLayoutMode(value);
-  localStorage.setItem('tableLayoutMode', state.tableLayoutMode);
+  persistCurrentReadingLayout();
   $$('.rpage').forEach(applyTableLayout);
   renderPanel();
   if (state.currentBook) repaginateKeepPosition();
@@ -764,7 +814,7 @@ function panelTemplate() {
   const speechVolume = clampTtsVolume(state.ttsVolume);
   const speechRate = clampSpeechRate(localStorage.getItem('speechRate'));
   const sleepBtns = [10, 30, 50, 60].map(min => `<button class="slp-bt ${sleepLeft === min ? 'on' : ''}" data-sleep="${min}">${min}分</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">宋體</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">表格版面</div><div class="font-opts table-layout-opts"><button class="font-opt ${state.tableLayoutMode === 'standard' ? 'on' : ''}" data-table-layout-mode="standard" aria-pressed="${state.tableLayoutMode === 'standard'}">標準表格</button><button class="font-opt ${state.tableLayoutMode === 'bilingual' ? 'on' : ''}" data-table-layout-mode="bilingual" aria-pressed="${state.tableLayoutMode === 'bilingual'}">中英對照</button></div><div class="sg-hint">中英對照會將兩欄表格在手機顯示為上下對照卡片，寬螢幕則並排顯示。</div></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">顯示值會直接套用為實際朗讀速度；指定中文聲線後，最高可調至 2.5×。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">「高速中文」沿用書閣的中文聲線優先策略；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">閱讀版面（各自記憶調整）</div><div class="font-opts preset-opts"><button class="font-opt ${state.readingPresetMode === 'novel' ? 'on' : ''}" data-reading-preset="novel">小說閱讀</button><button class="font-opt ${state.readingPresetMode === 'english' ? 'on' : ''}" data-reading-preset="english">英文舒讀</button></div><div class="sg-hint">目前版面的字體、字級、行高、段距、邊距與表格模式會分開保存。</div></div><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts font-builtins"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">中文宋體</button><button class="font-opt ${state.fontFamily === 'english-serif' ? 'on' : ''}" data-font="english-serif">英文襯線</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">系統黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">表格版面</div><div class="font-opts table-layout-opts"><button class="font-opt ${state.tableLayoutMode === 'standard' ? 'on' : ''}" data-table-layout-mode="standard" aria-pressed="${state.tableLayoutMode === 'standard'}">標準表格</button><button class="font-opt ${state.tableLayoutMode === 'bilingual' ? 'on' : ''}" data-table-layout-mode="bilingual" aria-pressed="${state.tableLayoutMode === 'bilingual'}">雙語表格</button></div><div class="sg-hint">雙語表格會將兩欄內容在手機顯示為上下對照卡片，寬螢幕則並排顯示；不影響一般文章段落。</div></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">字級</span><input type="range" class="spd-slider" id="fontSize" min="16" max="34" step="1" value="${state.fontSize}"><span class="spd-val" id="fontSizeVal">${state.fontSize}px</span></div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div><div class="sg-lbl layout-sub-label">左右邊距</div><div class="font-opts margin-opts"><button class="font-opt ${state.marginPreset === 'narrow' ? 'on' : ''}" data-margin-preset="narrow">窄</button><button class="font-opt ${state.marginPreset === 'standard' ? 'on' : ''}" data-margin-preset="standard">標準</button><button class="font-opt ${state.marginPreset === 'wide' ? 'on' : ''}" data-margin-preset="wide">寬</button></div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">顯示值會直接套用為實際朗讀速度；指定中文聲線後，最高可調至 2.5×。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">「高速中文」沿用書閣的中文聲線優先策略；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -791,9 +841,26 @@ function bindPanelEvents() {
   $('#panelClose')?.addEventListener('click', closePanel);
   $('#panelX')?.addEventListener('click', closePanel);
   $$('[data-chapter]').forEach(el => el.addEventListener('click', () => jumpChapter(Number(el.dataset.chapter))));
-  $$('[data-font]').forEach(btn => btn.addEventListener('click', () => { state.fontFamily = btn.dataset.font; localStorage.setItem('fontFamily', state.fontFamily); closePanel(); repaginateKeepPosition(); }));
+  $$('[data-reading-preset]').forEach(btn => btn.addEventListener('click', () => applyReadingPresetMode(btn.dataset.readingPreset)));
+  $$('[data-font]').forEach(btn => btn.addEventListener('click', () => { state.fontFamily = btn.dataset.font; persistCurrentReadingLayout(); closePanel(); repaginateKeepPosition(); }));
   $$('[data-table-layout-mode]').forEach(btn => btn.addEventListener('click', () => setTableLayoutMode(btn.dataset.tableLayoutMode)));
-  $$('[data-font-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('fonts', btn.dataset.fontDelete); if (state.fontFamily === `custom-${btn.dataset.fontDelete}`) { state.fontFamily = 'serif'; localStorage.setItem('fontFamily', state.fontFamily); } state.fonts = await DB.all('fonts'); renderPanel(); if (state.currentBook) repaginateKeepPosition(); toast('字體已刪除'); }));
+  $$('[data-margin-preset]').forEach(btn => btn.addEventListener('click', () => { state.marginPreset = btn.dataset.marginPreset; persistCurrentReadingLayout(); renderPanel(); if (state.currentBook) repaginateKeepPosition(); }));
+  $$('[data-font-delete]').forEach(btn => btn.addEventListener('click', async e => {
+    e.stopPropagation();
+    const deletedFamily = `custom-${btn.dataset.fontDelete}`;
+    await DB.delete('fonts', btn.dataset.fontDelete);
+    for (const id of ['novel', 'english']) {
+      if (state.readingPresets[id].fontFamily !== deletedFamily) continue;
+      state.readingPresets[id].fontFamily = id === 'english' ? 'english-serif' : 'serif';
+      state.readingPresets[id] = saveReadingPreset(localStorage, id, state.readingPresets[id]);
+    }
+    if (state.fontFamily === deletedFamily) state.fontFamily = state.readingPresetMode === 'english' ? 'english-serif' : 'serif';
+    persistCurrentReadingLayout();
+    state.fonts = await DB.all('fonts');
+    renderPanel();
+    if (state.currentBook) repaginateKeepPosition();
+    toast('字體已刪除');
+  }));
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
   $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
@@ -802,15 +869,21 @@ function bindPanelEvents() {
     else localStorage.removeItem('speechVoiceURI');
   });
   $('#speechVolume')?.addEventListener('input', e => setTtsVolume(e.target.value));
+  $('#fontSize')?.addEventListener('input', e => {
+    state.fontSize = Number(e.target.value);
+    persistCurrentReadingLayout();
+    $('#fontSizeVal') && ($('#fontSizeVal').textContent = `${state.fontSize}px`);
+    if (state.currentBook) repaginateKeepPosition();
+  });
   $('#lineHeight')?.addEventListener('input', e => {
     state.lineHeight = Number(e.target.value);
-    localStorage.setItem('lineHeight', String(state.lineHeight));
+    persistCurrentReadingLayout();
     $('#lineHeightVal') && ($('#lineHeightVal').textContent = `${state.lineHeight.toFixed(1)}×`);
     if (state.currentBook) repaginateKeepPosition();
   });
   $('#paragraphSpacing')?.addEventListener('input', e => {
     state.paragraphSpacing = Number(e.target.value);
-    localStorage.setItem('paragraphSpacing', String(state.paragraphSpacing));
+    persistCurrentReadingLayout();
     $('#paragraphSpacingVal') && ($('#paragraphSpacingVal').textContent = `${state.paragraphSpacing.toFixed(1)}行`);
     if (state.currentBook) repaginateKeepPosition();
   });
@@ -836,8 +909,8 @@ function bindEvents() {
   $('#sleepBtn')?.addEventListener('click', () => sleepMinutesLeft() ? setSleepTimer(0) : openPanel('settings'));
   $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());
   $('#rfStop')?.addEventListener('click', () => tts.stop());
-  $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); localStorage.setItem('fontSize', state.fontSize); repaginateKeepPosition(); });
-  $('#fontPlus')?.addEventListener('click', () => { state.fontSize = Math.min(34, state.fontSize + 2); localStorage.setItem('fontSize', state.fontSize); repaginateKeepPosition(); });
+  $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); persistCurrentReadingLayout(); repaginateKeepPosition(); });
+  $('#fontPlus')?.addEventListener('click', () => { state.fontSize = Math.min(34, state.fontSize + 2); persistCurrentReadingLayout(); repaginateKeepPosition(); });
   $('#rfProg')?.addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); state.currentPage = Math.round(((e.clientX - r.left) / r.width) * (state.pages.length - 1)); renderPage(); });
 }
 
