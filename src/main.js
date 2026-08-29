@@ -15,7 +15,7 @@ import {
   setActiveReadingPreset,
 } from './reading-presets.js';
 
-const APP_VERSION = '0.6.0-reading-presets';
+const APP_VERSION = '0.6.1-library-categories';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 2.5;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -58,6 +58,7 @@ const state = {
   tableLayoutMode: normalizeTableLayoutMode(initialReadingLayout.tableLayoutMode),
   ttsVolume: Number(localStorage.getItem('ttsVolume') || 1),
   wakeLockStatus: 'idle',
+  libraryCategory: localStorage.getItem('libraryCategory') || 'all',
   view: 'library',
   toolbarOn: false,
   panel: null,
@@ -766,15 +767,28 @@ function restoreSleepTimer() {
 
 function libraryTemplate() {
   const books = sortedLibraryBooks();
-  const recentCount = books.filter(isReadingBook).length;
+  const counts = { all: books.length, txt: 0, markdown: 0 };
+  books.forEach(book => { counts[bookCategory(book)] += 1; });
+  if (!Object.hasOwn(counts, state.libraryCategory)) state.libraryCategory = 'all';
+  const visibleBooks = state.libraryCategory === 'all' ? books : books.filter(book => bookCategory(book) === state.libraryCategory);
+  const recentCount = visibleBooks.filter(isReadingBook).length;
   const shelfLabel = recentCount ? `近期閱讀 ${recentCount} 本優先` : '依匯入時間排序';
+  const categories = [['all', '全部'], ['txt', '小說 TXT'], ['markdown', '文件 MD']]
+    .map(([id, label]) => `<button class="library-category ${state.libraryCategory === id ? 'on' : ''}" data-library-category="${id}" aria-pressed="${state.libraryCategory === id}">${label}<span>${counts[id]}</span></button>`).join('');
+  const empty = books.length
+    ? '<div class="bempty"><div class="bempty-ico">分類</div><div class="bempty-txt">此分類尚無檔案</div></div>'
+    : '<div class="bempty"><div class="bempty-ico">書</div><div class="bempty-txt">書庫空空如也<br>上傳 TXT 或 Markdown 開始閱讀</div><label class="bempty-btn">＋ 上傳第一本書<input id="emptyImport" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden></label></div>';
   return `
     <header class="lhd"><div class="lhd-logo">月閣 <small>LunaShelf v${APP_VERSION}</small></div><button class="ibt" id="refreshBtn" aria-label="強制更新">↻</button><button class="ibt" id="themeBtn" aria-label="切換夜間">${state.theme === 'dark' ? '☀' : '🌙'}</button><button class="ibt" id="topImportBtn" aria-label="匯入 TXT 或 Markdown">＋</button></header>
     <main class="lbody">
-      <div class="lbar"><span class="lbar-t">書庫</span><div class="lbar-l"></div><span class="lbar-c">${state.books.length} 本 · ${shelfLabel}</span></div>
-      <section class="blist">${books.map(bookRow).join('') || '<div class="bempty"><div class="bempty-ico">書</div><div class="bempty-txt">書庫空空如也<br>上傳 TXT 或 Markdown 開始閱讀</div><label class="bempty-btn">＋ 上傳第一本書<input id="emptyImport" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden></label></div>'}</section>
+      <div class="lbar"><span class="lbar-t">書庫</span><div class="lbar-l"></div><span class="lbar-c">${visibleBooks.length} 本 · ${shelfLabel}</span></div>
+      <nav class="library-categories" aria-label="書庫分類">${categories}</nav>
+      <section class="blist">${visibleBooks.map(bookRow).join('') || empty}</section>
     </main>
     <button class="fab" id="fab" aria-label="上傳書籍">＋</button><input id="bookInput" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden>`;
+}
+function bookCategory(book) {
+  return book.format === 'markdown' || isMarkdownFileName(book.fileName) ? 'markdown' : 'txt';
 }
 function bookRow(book) {
   const pct = bookProgress(book);
@@ -896,6 +910,11 @@ function bindEvents() {
   $('#fab')?.addEventListener('click', () => $('#bookInput')?.click());
   $('#bookInput')?.addEventListener('change', e => [...e.target.files].forEach(importBook));
   $('#emptyImport')?.addEventListener('change', e => [...e.target.files].forEach(importBook));
+  $$('[data-library-category]').forEach(btn => btn.addEventListener('click', () => {
+    state.libraryCategory = btn.dataset.libraryCategory;
+    localStorage.setItem('libraryCategory', state.libraryCategory);
+    render();
+  }));
   $$('[data-open]').forEach(row => row.addEventListener('click', e => { if (e.target.closest('[data-delete]')) return; openBook(row.dataset.open); }));
   $$('[data-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('books', btn.dataset.delete); state.books = (await DB.all('books')).map(TxtParser.enrichBook); render(); }));
   $('#backBtn')?.addEventListener('click', async () => { tts.stop(); state.books = (await DB.all('books')).map(TxtParser.enrichBook); state.view = 'library'; render(); });
