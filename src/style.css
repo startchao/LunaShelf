@@ -105,6 +105,16 @@ button { border: 0; background: none; cursor: pointer; }
 .chapter-title { margin: 0 0 var(--para-gap); font-size: 1.08em; font-weight: 700; line-height: inherit; text-indent: 0; }
 .para { margin: var(--para-gap) 0 0; line-height: inherit; text-align: justify; text-indent: 2em; word-break: break-word; overflow-wrap: break-word; }
 .rp-body .para:first-child { margin-top: 0; }
+.md-heading { color: var(--ac); font-weight: 800; text-align: left; text-indent: 0; letter-spacing: .03em; }
+.md-heading:not(:first-child) { margin-top: calc(var(--para-gap) * 1.45); }
+h1.md-heading { font-size: 1.5em; border-bottom: 2px solid var(--bd2); padding-bottom: .2em; }
+h2.md-heading { font-size: 1.3em; border-bottom: 1px solid var(--bd); padding-bottom: .16em; }
+h3.md-heading { font-size: 1.16em; }
+h4.md-heading, h5.md-heading, h6.md-heading { font-size: 1.05em; }
+.md-list-item { position: relative; padding-left: 1.6em; text-indent: -1.6em; text-align: left; }
+.md-blockquote { padding: .45em .75em; border-left: 4px solid var(--ac); border-radius: 0 6px 6px 0; background: var(--acp); color: var(--tx2); text-indent: 0; text-align: left; }
+.md-code { padding: .7em; border: 1px solid var(--bd2); border-radius: 7px; background: var(--bg3); color: var(--tx2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82em; line-height: 1.45; text-align: left; text-indent: 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.md-code code { font: inherit; white-space: inherit; }
 .para.tts-hi { background: var(--acp); border-left: 2px solid var(--ac); padding-left: 8px; text-indent: 0; }
 .rp-foot { position: absolute; left: max(var(--page-margin-x), calc((100% - var(--text-max-width)) / 2)); right: max(var(--page-margin-x), calc((100% - var(--text-max-width)) / 2)); bottom: max(var(--page-margin-y), env(safe-area-inset-bottom,0px)); height: 12px; padding: 0; margin: 0; display: flex; align-items: center; justify-content: space-between; border-top: 0; opacity: .58; font-family: var(--font-system); }
 .rp-num { font-size: 12px; line-height: 12px; color: var(--tx3); margin-left: auto; }

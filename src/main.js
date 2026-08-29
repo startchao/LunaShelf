@@ -1,7 +1,14 @@
 import './style.css';
 import { TtsPlaybackGeneration } from './tts-playback-generation.js';
+import {
+  createBookBlockElement,
+  isMarkdownFileName,
+  isSupportedBookFileName,
+  markdownToBookData,
+  stripBookExtension,
+} from './markdown.js';
 
-const APP_VERSION = '0.4.12-fast-voice';
+const APP_VERSION = '0.5.0-markdown';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 2.5;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -140,6 +147,14 @@ class TxtParser {
     return lines.length ? lines : [text.trim()].filter(Boolean);
   }
   static enrichBook(book) {
+    if (book.format === 'markdown' || isMarkdownFileName(book.fileName)) {
+      const parsed = markdownToBookData(book.content || '');
+      book.format = 'markdown';
+      book.blocks = parsed.blocks;
+      book.paragraphs = parsed.paragraphs;
+      book.chapters = parsed.chapters.length ? parsed.chapters : [{ title: '全文', idx: 0 }];
+      return book;
+    }
     if (!book.paragraphs?.length) book.paragraphs = TxtParser.paragraphs(book.content || '');
     book.content = book.content || book.paragraphs.join('\n');
     book.chapters = TxtParser.chapters(book.paragraphs);
@@ -217,7 +232,7 @@ class AudioSessionManager {
     this.audio.volume = state.ttsVolume;
     try { await this.audio.play(); } catch (err) { console.warn('Audio session start blocked', err); }
     if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({ title: book?.title || '月閣', artist: 'LunaShelf', album: 'TXT Reader' });
+      navigator.mediaSession.metadata = new MediaMetadata({ title: book?.title || '月閣', artist: 'LunaShelf', album: 'TXT / Markdown Reader' });
       navigator.mediaSession.playbackState = 'playing';
       // Media Session play is an explicit user/system command, so it follows the
       // same clean-generation path as the on-screen Play button.
@@ -347,7 +362,7 @@ class SpeechQueue {
     return generation;
   }
   play() {
-    if (!state.currentBook) return toast('請先開啟一本 TXT');
+    if (!state.currentBook) return toast('請先開啟一本書');
     if (!this.isSupported()) return toast('這個瀏覽器不支援朗讀，請用 Safari/Edge/Chrome 測試');
     if (this.state === 'playing') return;
     const startPara = this.resumePara
@@ -495,10 +510,11 @@ function sortedLibraryBooks() {
 }
 
 async function importBook(file) {
-  if (!file.name.toLowerCase().endsWith('.txt')) return toast('目前先支援 TXT');
+  if (!isSupportedBookFileName(file.name)) return toast('支援 TXT、MD 與 MARKDOWN 檔案');
   const content = await TxtParser.parse(file);
-  const paragraphs = TxtParser.paragraphs(content);
-  const book = TxtParser.enrichBook({ id: uid(), title: file.name.replace(/\.txt$/i, ''), fileName: file.name, content, paragraphs, progressPara: 0, createdAt: Date.now(), updatedAt: Date.now() });
+  const markdown = isMarkdownFileName(file.name);
+  const paragraphs = markdown ? undefined : TxtParser.paragraphs(content);
+  const book = TxtParser.enrichBook({ id: uid(), title: stripBookExtension(file.name), fileName: file.name, format: markdown ? 'markdown' : 'txt', content, paragraphs, progressPara: 0, createdAt: Date.now(), updatedAt: Date.now() });
   await DB.put('books', book);
   state.books = (await DB.all('books')).map(TxtParser.enrichBook);
   render();
@@ -526,12 +542,8 @@ function applyReaderTypography(node) {
   node.style.setProperty('--para-gap', getParagraphGapEm());
 }
 
-function makeParagraph(text, idx) {
-  const p = document.createElement('p');
-  p.className = 'para';
-  if (Number.isFinite(idx)) p.dataset.paraIdx = idx;
-  p.textContent = text;
-  return p;
+function makeParagraph(text, idx, block) {
+  return createBookBlockElement(block || { type: 'paragraph', text }, idx);
 }
 
 function createPaginationProbe() {
@@ -562,7 +574,7 @@ function paginate(goToPara = 0) {
     let endPara = cursor;
     while (endPara < book.paragraphs.length) {
       if (endPara > startPara && chapterStarts.has(endPara)) break;
-      const p = makeParagraph(book.paragraphs[endPara]);
+      const p = makeParagraph(book.paragraphs[endPara], endPara, book.blocks?.[endPara]);
       probeBody.appendChild(p);
       if (probeBody.scrollHeight > probeBody.clientHeight) {
         probeBody.removeChild(p);
@@ -592,7 +604,7 @@ function renderPage() {
   applyReaderTypography(body);
   body.innerHTML = '';
   for (let i = page.startPara; i <= page.endPara && i < state.currentBook.paragraphs.length; i++) {
-    body.appendChild(makeParagraph(state.currentBook.paragraphs[i], i));
+    body.appendChild(makeParagraph(state.currentBook.paragraphs[i], i, state.currentBook.blocks?.[i]));
   }
   const total = state.pages.length || 1;
   const percent = total > 1 ? Math.round((state.currentPage / (total - 1)) * 100) : 0;
@@ -688,12 +700,12 @@ function libraryTemplate() {
   const recentCount = books.filter(isReadingBook).length;
   const shelfLabel = recentCount ? `近期閱讀 ${recentCount} 本優先` : '依匯入時間排序';
   return `
-    <header class="lhd"><div class="lhd-logo">月閣 <small>LunaShelf v${APP_VERSION}</small></div><button class="ibt" id="refreshBtn" aria-label="強制更新">↻</button><button class="ibt" id="themeBtn" aria-label="切換夜間">${state.theme === 'dark' ? '☀' : '🌙'}</button><button class="ibt" id="topImportBtn" aria-label="匯入 TXT">＋</button></header>
+    <header class="lhd"><div class="lhd-logo">月閣 <small>LunaShelf v${APP_VERSION}</small></div><button class="ibt" id="refreshBtn" aria-label="強制更新">↻</button><button class="ibt" id="themeBtn" aria-label="切換夜間">${state.theme === 'dark' ? '☀' : '🌙'}</button><button class="ibt" id="topImportBtn" aria-label="匯入 TXT 或 Markdown">＋</button></header>
     <main class="lbody">
       <div class="lbar"><span class="lbar-t">書庫</span><div class="lbar-l"></div><span class="lbar-c">${state.books.length} 本 · ${shelfLabel}</span></div>
-      <section class="blist">${books.map(bookRow).join('') || '<div class="bempty"><div class="bempty-ico">書</div><div class="bempty-txt">書庫空空如也<br>上傳 TXT 格式小說開始閱讀</div><label class="bempty-btn">＋ 上傳第一本書<input id="emptyImport" type="file" accept=".txt,text/plain" hidden></label></div>'}</section>
+      <section class="blist">${books.map(bookRow).join('') || '<div class="bempty"><div class="bempty-ico">書</div><div class="bempty-txt">書庫空空如也<br>上傳 TXT 或 Markdown 開始閱讀</div><label class="bempty-btn">＋ 上傳第一本書<input id="emptyImport" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden></label></div>'}</section>
     </main>
-    <button class="fab" id="fab" aria-label="上傳書籍">＋</button><input id="bookInput" type="file" accept=".txt,text/plain" hidden>`;
+    <button class="fab" id="fab" aria-label="上傳書籍">＋</button><input id="bookInput" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden>`;
 }
 function bookRow(book) {
   const pct = bookProgress(book);
