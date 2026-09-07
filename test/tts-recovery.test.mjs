@@ -12,7 +12,6 @@ function setup() {
     localStorage: {getItem:k=>saved.get(k) ?? null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
     SpeechSynthesisUtterance: class {constructor(text){this.text=text;}},
     speechSynthesis:{getVoices:()=>[],speak:u=>spoken.push(u),cancel:()=>{},speaking:true,pending:true},
-    bookAudio:{pause(){},releaseSession(){}},
     clampSpeechRate:()=>4, performance:{now:()=>1000},
     clearTimeout:id=>timers.delete(id), setTimeout:fn=>{timers.set(++nextTimer,fn);return nextTimer;},
     renderTtsState(){},renderPanel(){},highlightPara(){},saveProgressFromPage(){},toast(){},checkSleepDeadline:()=>false,

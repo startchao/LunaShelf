@@ -226,18 +226,7 @@ h4.md-heading, h5.md-heading, h6.md-heading { font-size: 1.05em; }
   .rfbt, .rffont, .rftog { min-width: 36px; padding: 0 7px; }
 }
 
-
-.audio-settings .font-import-btn { margin: 8px 0; }
-.audio-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-.audio-buttons .font-opt { flex: 1; min-width: 92px; text-align: center; text-decoration: none; }
-.audio-seek { width: 100%; accent-color: var(--ac); }
-.audio-guide { margin-top: 14px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-.audio-guide summary { cursor: pointer; color: var(--ac); font-weight: 700; }
-.audio-guide ol { padding-left: 22px; }
-.audio-guide p { margin: 10px 0; }
-.audio-settings .sg-hint { overflow-wrap: anywhere; }
-
-/* Status lives in the reserved page-number footer, never over book text. */
+/* Keep playback status in the reserved page-number footer. */
 .rp-foot { gap: 12px; }
 .rp-foot .tts-status { flex: 1; min-width: 0; font-size: 11px; line-height: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rp-foot .rp-num { flex-shrink: 0; margin-left: auto; }
