@@ -15,12 +15,12 @@ import {
   setActiveReadingPreset,
 } from './reading-presets.js';
 
-const APP_VERSION = '0.6.2-timer-access';
+const APP_VERSION = '0.6.3-tts-recovery';
 const TTS_RATE_MIN = 0.5;
-const TTS_RATE_MAX = 2.5;
+const TTS_RATE_MAX = 4;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
 if (localStorage.getItem('ttsRatePresetVersion') !== TTS_RATE_PRESET_VERSION) {
-  localStorage.setItem('speechRate', String(TTS_RATE_MAX));
+  if (!localStorage.getItem('speechRate')) localStorage.setItem('speechRate', '2.5');
   localStorage.removeItem('ttsDiagPreset');
   localStorage.removeItem('ttsDiagRestoreRate');
   localStorage.removeItem('ttsDiagLast');
@@ -219,47 +219,6 @@ class WakeLockManager {
 
 const wakeLock = new WakeLockManager();
 
-class AudioSessionManager {
-  constructor() { this.audio = null; this.objectUrl = null; }
-  makeSilentWavUrl() {
-    const sampleRate = 8000, seconds = 0.25, samples = sampleRate * seconds;
-    const buffer = new ArrayBuffer(44 + samples * 2), view = new DataView(buffer);
-    const write = (offset, text) => [...text].forEach((c, i) => view.setUint8(offset + i, c.charCodeAt(0)));
-    write(0, 'RIFF'); view.setUint32(4, 36 + samples * 2, true); write(8, 'WAVE');
-    write(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
-    write(36, 'data'); view.setUint32(40, samples * 2, true);
-    return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
-  }
-  ensureAudio() {
-    if (this.audio) return;
-    this.objectUrl = this.makeSilentWavUrl();
-    this.audio = new Audio(this.objectUrl);
-    this.audio.loop = true;
-    this.audio.playsInline = true;
-    this.audio.preload = 'auto';
-    this.audio.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(this.audio);
-  }
-  async start(book) {
-    this.ensureAudio();
-    this.audio.volume = state.ttsVolume;
-    try { await this.audio.play(); } catch (err) { console.warn('Audio session start blocked', err); }
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({ title: book?.title || '月閣', artist: 'LunaShelf', album: 'TXT / Markdown Reader' });
-      navigator.mediaSession.playbackState = 'playing';
-      // Media Session play is an explicit user/system command, so it follows the
-      // same clean-generation path as the on-screen Play button.
-      navigator.mediaSession.setActionHandler('play', () => tts.play());
-      navigator.mediaSession.setActionHandler('pause', () => tts.pause());
-      navigator.mediaSession.setActionHandler('stop', () => tts.stop());
-      navigator.mediaSession.setActionHandler('seekbackward', () => turnPage(-1));
-      navigator.mediaSession.setActionHandler('seekforward', () => turnPage(1));
-    }
-  }
-  stop() { if (this.audio) this.audio.pause(); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; }
-}
-
 class SpeechQueue {
   constructor() {
     this.state = 'idle';
@@ -271,7 +230,10 @@ class SpeechQueue {
     this.activeSegment = null;
     this.resumePara = null;
     this.playback = new TtsPlaybackGeneration();
-    this.audioSession = new AudioSessionManager();
+    this.notice = "";
+    this.resumeSegment = 0;
+    this.diagnostic = false;
+    this.diagnosticResults = [];
     this.startWatchdog = null;
     this.sessionVoice = null;
   }
@@ -309,36 +271,38 @@ class SpeechQueue {
     u.onstart = () => {
       if (!this.playback.isCurrent(u, generation) || this.state !== 'playing') return;
       clearTimeout(this.startWatchdog);
-      highlightPara(paraIdx);
+      u.startedAt = performance.now();
+      this.notice = '';
+      renderTtsState();
+      if (!this.diagnostic) highlightPara(paraIdx);
     };
     u.onend = () => {
       if (!this.playback.clear(u, generation) || this.state !== 'playing') return;
+      clearTimeout(this.startWatchdog);
       this.currentUtterance = null;
-      this.activeSegment = null;
-      this.nextPara = Math.max(this.nextPara, paraIdx + 1);
-      this.resumePara = this.nextPara;
-      saveProgressFromPage();
-      this.speakNext(generation);
-    };
-    u.onerror = ev => {
-      if (!this.playback.clear(u, generation) || this.state !== 'playing') return;
-      console.warn('TTS error', ev.error || ev);
-      this.currentUtterance = null;
-      if (['interrupted', 'canceled'].includes(ev.error)) {
-        // External interruption ends this generation. Only a later explicit
-        // Play may create another utterance.
-        this.resumePara = paraIdx;
-        this.state = 'idle';
-        this.activeSegment = null;
-        this.audioSession.stop();
-        wakeLock.release().catch(() => {});
+      if (this.diagnostic) {
+        const elapsed = u.startedAt == null ? null : ((performance.now() - u.startedAt) / 1000).toFixed(2);
+        this.diagnosticResults.unshift(`${u.voice?.name || '系統自動'} · 語速 ${u.rate}：${elapsed == null ? '未收到開始事件，無法計時' : elapsed + ' 秒'}`);
+        this.diagnosticResults = this.diagnosticResults.slice(0, 6);
+        this.diagnostic = false;
+        this.state = 'paused';
+        this.notice = '試聽完成，可繼續聽書';
+        renderPanel();
         renderTtsState();
         return;
       }
       this.activeSegment = null;
-      this.nextPara = Math.max(this.nextPara, paraIdx + 1);
-      this.resumePara = this.nextPara;
+      const next = this.segments[this.segmentIndex];
+      if (next) this.checkpoint(next);
+      saveProgressFromPage();
       this.speakNext(generation);
+    };
+    u.onerror = ev => {
+      if (!this.playback.isCurrent(u, generation) || this.state !== 'playing') return;
+      console.warn('TTS error', ev.error || ev);
+      this.pause(); // Keep the failed segment; never silently skip text.
+      this.notice = '朗讀中斷，請點播放從本段繼續';
+      renderTtsState();
     };
     return u;
   }
@@ -346,15 +310,50 @@ class SpeechQueue {
     const book = state.currentBook;
     const out = [];
     for (let i = startPara; book && i < book.paragraphs.length; i++) {
-      for (const text of this.splitText(book.paragraphs[i] || '')) if (text) out.push({ text, paraIdx: i });
+      this.splitText(book.paragraphs[i] || '').forEach((text, part) => { if (text) out.push({ text, paraIdx: i, part }); });
     }
     return out;
   }
   prepareFrom(startPara) {
     this.nextPara = Math.max(0, startPara || 0);
     this.segments = this.buildSegments(this.nextPara);
-    this.segmentIndex = 0;
+    const found = this.segments.findIndex(seg => seg.paraIdx === this.nextPara && seg.part === this.resumeSegment);
+    this.segmentIndex = Math.max(0, found);
     this.activeSegment = null;
+  }
+  checkpoint(seg) {
+    this.resumePara = seg.paraIdx;
+    this.resumeSegment = seg.part || 0;
+    try { localStorage.setItem(`tts-position:${state.currentBook.id}`, JSON.stringify({ paraIdx: this.resumePara, part: this.resumeSegment })); } catch (_) { /* retain in memory */ }
+  }
+  restorePosition() {
+    this.resumePara = null;
+    this.resumeSegment = 0;
+    try {
+      const saved = JSON.parse(localStorage.getItem(`tts-position:${state.currentBook.id}`));
+      if (saved && Number.isInteger(saved.paraIdx) && saved.paraIdx >= 0 && saved.paraIdx < state.currentBook.paragraphs.length) {
+        this.resumePara = saved.paraIdx;
+        this.resumeSegment = Number.isInteger(saved.part) && saved.part >= 0 ? saved.part : 0;
+      }
+    } catch (_) { /* invalid or unavailable storage */ }
+  }
+  testRate() {
+    if (!this.isSupported()) return toast('此瀏覽器不支援朗讀');
+    if (this.state === 'playing') {
+      this.pause();
+      return toast('已暫停，請再點一次測試語速');
+    }
+    const generation = this.invalidateSpeechState();
+    this.sessionVoice = this.pickVoice();
+    this.diagnostic = true;
+    this.state = 'playing';
+    this.notice = '正在測試語速；可按暫停中止';
+    const u = this.makeUtterance('清晨的陽光穿過窗簾，灑在桌上的小說。我們沿著故事前進，聆聽每一句話，感受角色的心情。', 0, generation);
+    this.currentUtterance = u;
+    this.playback.set(u, generation);
+    renderTtsState();
+    speechSynthesis.speak(u);
+    this.armStartWatchdog(u, generation);
   }
   invalidateSpeechState() {
     clearTimeout(this.startWatchdog);
@@ -379,6 +378,9 @@ class SpeechQueue {
     if (!state.currentBook) return toast('請先開啟一本書');
     if (!this.isSupported()) return toast('這個瀏覽器不支援朗讀，請用 Safari/Edge/Chrome 測試');
     if (this.state === 'playing') return;
+    if (checkSleepDeadline()) return;
+    this.diagnostic = false;
+    this.notice = '';
     const startPara = this.resumePara
       ?? state.pages[state.currentPage]?.startPara
       ?? state.currentBook.progressPara
@@ -394,32 +396,35 @@ class SpeechQueue {
     this.state = 'playing';
     renderTtsState();
     this.speakNext(generation); // Keep first speak inside the user activation.
-    this.audioSession.start(state.currentBook).catch(err => console.warn('Audio session start blocked', err));
+
     wakeLock.request().catch(err => console.warn('wake lock request failed', err));
   }
   armStartWatchdog(utterance, generation) {
     clearTimeout(this.startWatchdog);
     this.startWatchdog = setTimeout(() => {
       if (!this.playback.isCurrent(utterance, generation) || this.state !== 'playing') return;
-      if (speechSynthesis.speaking || speechSynthesis.pending) return;
-      this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
+      if (utterance.startedAt != null) return;
+      if (this.activeSegment && !this.diagnostic) this.checkpoint(this.activeSegment);
       this.state = 'idle';
-      this.invalidateSpeechState();
+      this.cancelSpeechEngine();
+      this.diagnostic = false;
+      this.notice = '朗讀未啟動，請點播放重試；若仍無聲，請重新開啟閱讀器';
       this.activeSegment = null;
-      this.audioSession.stop();
+  
       wakeLock.release().catch(() => {});
       renderTtsState();
       toast('朗讀未啟動，請再點一次播放');
-    }, 1400);
+    }, 5000);
   }
   speakNext(generation) {
     const book = state.currentBook;
-    if (this.state !== 'playing' || generation !== this.playback.value || !book) return;
+    if (checkSleepDeadline() || this.state !== 'playing' || generation !== this.playback.value || !book) return;
     const seg = this.segments[this.segmentIndex++];
     if (!seg) return this.stop();
     this.nextPara = seg.paraIdx;
     this.resumePara = seg.paraIdx;
     this.activeSegment = seg;
+    this.checkpoint(seg);
     const utterance = this.makeUtterance(seg.text, seg.paraIdx, generation);
     this.currentUtterance = utterance;
     if (!this.playback.set(utterance, generation)) return;
@@ -428,32 +433,42 @@ class SpeechQueue {
   }
   suspendForBackground() {
     if (this.state !== 'playing') return;
-    this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
-    this.state = 'idle';
+    if (this.activeSegment && !this.diagnostic) this.checkpoint(this.activeSegment);
+    this.state = 'paused';
+    this.diagnostic = false;
+    this.notice = '已保留聽書位置，回來後請點播放繼續';
     this.cancelSpeechEngine();
     this.activeSegment = null;
-    this.audioSession.stop();
+
     wakeLock.release().catch(() => {});
     renderTtsState();
     saveProgressFromPage();
   }
   pause() {
-    this.resumePara = this.activeSegment?.paraIdx ?? this.nextPara;
+    if (this.activeSegment && !this.diagnostic) this.checkpoint(this.activeSegment);
     this.state = 'paused';
+    this.diagnostic = false;
+    this.notice = '已暫停，點播放繼續';
     this.cancelSpeechEngine();
     this.activeSegment = null;
-    this.audioSession.stop();
+
     wakeLock.release().catch(() => {});
     renderTtsState();
     saveProgressFromPage();
   }
-  stop() {
+  stop(preservePosition = false) {
+    this.diagnostic = false;
+    this.notice = "";
+    if (!preservePosition && state.currentBook) {
+      try { localStorage.removeItem(`tts-position:${state.currentBook.id}`); } catch (_) {}
+    }
+    this.resumeSegment = 0;
     this.state = 'idle';
     this.cancelSpeechEngine();
     this.resumePara = null;
     this.activeSegment = null;
     this.segments = [];
-    this.audioSession.stop();
+
     wakeLock.release().catch(() => {});
     renderTtsState();
     saveProgressFromPage();
@@ -493,7 +508,6 @@ function setTtsVolume(value, persist = true) {
   state.ttsVolume = clampTtsVolume(value);
   if (persist) localStorage.setItem('ttsVolume', String(state.ttsVolume));
   if (tts?.currentUtterance) tts.currentUtterance.volume = state.ttsVolume;
-  if (tts?.audioSession?.audio) tts.audioSession.audio.volume = state.ttsVolume;
   const slider = $('#speechVolume');
   const label = $('#speechVolumeVal');
   if (slider) slider.value = String(state.ttsVolume);
@@ -539,7 +553,7 @@ async function saveBook(book) { book.updatedAt = Date.now(); await DB.put('books
 function saveProgressFromPage() {
   if (!state.currentBook || !state.pages[state.currentPage]) return;
   state.currentBook.progressPara = state.pages[state.currentPage].startPara;
-  saveBook(state.currentBook);
+  saveBook(state.currentBook).catch(err => console.warn('progress save failed', err));
 }
 
 function getChapterIndex(paraIdx) {
@@ -720,6 +734,7 @@ function closePanel() { state.panel = null; renderPanel(); }
 function jumpChapter(i) {
   const ch = state.currentBook?.chapters?.[i];
   if (!ch) return;
+  tts.stop();
   paginate(ch.idx);
   closePanel();
   renderPage();
@@ -731,6 +746,8 @@ function highlightPara(idx) {
   $(`.para[data-para-idx="${idx}"]`)?.classList.add('tts-hi');
 }
 function renderTtsState() {
+  const status = $('#ttsStatus');
+  if (status) status.textContent = tts.notice || (tts.state === 'playing' ? '朗讀中' : '');
   const btn = $('#rfPlay');
   if (btn) btn.textContent = tts.state === 'playing' ? '⏸' : '▶';
   const sleepBtn = $('#sleepBtn');
@@ -740,6 +757,17 @@ function renderTtsState() {
     sleepBtn.classList.toggle('on', Boolean(left));
     sleepBtn.title = left ? `定時關閉：剩 ${left} 分；點擊取消` : '選擇定時關閉時間';
   }
+}
+function checkSleepDeadline() {
+  if (!state.sleepUntil || Date.now() < state.sleepUntil) return false;
+  clearTimeout(state.sleepTimer);
+  state.sleepUntil = 0;
+  localStorage.removeItem('sleepUntil');
+  tts.pause();
+  tts.notice = '定時結束，已暫停朗讀';
+  renderPanel();
+  renderTtsState();
+  return true;
 }
 function sleepMinutesLeft() {
   return Math.max(0, Math.ceil((state.sleepUntil - Date.now()) / 60000));
@@ -753,7 +781,7 @@ function setSleepTimer(minutes) {
   } else {
     state.sleepUntil = Date.now() + minutes * 60000;
     localStorage.setItem('sleepUntil', String(state.sleepUntil));
-    state.sleepTimer = setTimeout(() => { tts.stop(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, minutes * 60000);
+    state.sleepTimer = setTimeout(() => { tts.pause(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, minutes * 60000);
     toast(`已設定 ${minutes} 分鐘後停止`);
   }
   renderPanel();
@@ -761,7 +789,7 @@ function setSleepTimer(minutes) {
 }
 function restoreSleepTimer() {
   const left = state.sleepUntil - Date.now();
-  if (left > 0) state.sleepTimer = setTimeout(() => { tts.stop(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, left);
+  if (left > 0) state.sleepTimer = setTimeout(() => { tts.pause(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, left);
   else { state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); }
 }
 
@@ -804,7 +832,7 @@ function readerTemplate() {
       <header class="reader-head ${state.toolbarOn ? 'show' : ''}"><button class="rbk" id="backBtn">◀ 書庫</button><div class="rtitle">${esc(book.title)}</div><div class="rtool"><button class="ribt" id="tocBtn">☰</button><button class="ribt" id="setBtn">⚙</button></div></header>
       <main class="rbook" id="rbook"><div class="tap-zone zone-left" id="zoneLeft"></div><div class="tap-zone zone-mid" id="zoneMid"></div><div class="tap-zone zone-right" id="zoneRight"></div><article class="rpage ${tableLayout.className}" data-table-layout="${tableLayout.mode}"><div class="rp-body"></div><footer class="rp-foot"><span class="rp-num">…</span></footer></article></main>
       <footer class="reader-controls ${state.toolbarOn ? 'show' : ''}"><button class="rfbt" id="rfPlay" aria-label="播放/暫停">▶</button><button class="rfbt" id="rfStop" aria-label="停止">⏹</button><button class="rfbt" id="sleepBtn" aria-label="定時關閉">⏱</button><div class="rf-div"></div><button class="rfbt" id="bottomTocBtn" aria-label="目錄">☰</button><button class="rfbt" id="bottomSetBtn" aria-label="設定">⚙</button><button class="rftog" id="themeBtn" aria-label="日夜切換">${state.theme === 'dark' ? '☀' : '🌙'}</button><div class="rf-div"></div><button class="rffont" id="fontMinus">A−</button><button class="rffont" id="fontPlus">A+</button><div class="rf-prog-wrap"><div class="rf-prog" id="rfProg"><div class="rf-prog-f"></div></div><span class="rf-pct">0%</span></div></footer>
-      <div id="panelRoot"></div>
+      <div id="ttsStatus" role="status" aria-live="polite" style="position:fixed;bottom:calc(80px + env(safe-area-inset-bottom));left:16px;right:16px;text-align:center;pointer-events:none;font-size:13px;background:var(--bg);z-index:20"></div><div id="panelRoot"></div>
     </section>`;
 }
 function ttsVoiceOptions() {
@@ -812,7 +840,7 @@ function ttsVoiceOptions() {
   const voices = 'speechSynthesis' in window ? speechSynthesis.getVoices() : [];
   const chineseVoices = voices.filter(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
   const options = chineseVoices.map(v => `<option value="${esc(v.voiceURI)}" ${selected === v.voiceURI ? 'selected' : ''}>${esc(v.name)}（${esc(v.lang)}）</option>`).join('');
-  return `<option value="" ${selected === '' ? 'selected' : ''}>高速中文（建議）</option><option value="__auto__" ${selected === '__auto__' ? 'selected' : ''}>系統自動聲線</option>${options}`;
+  return `<option value="" ${selected === '' ? 'selected' : ''}>中文優先（自動選擇）</option><option value="__auto__" ${selected === '__auto__' ? 'selected' : ''}>系統自動聲線</option>${options}`;
 }
 function panelTemplate() {
   if (!state.panel) return '';
@@ -828,7 +856,7 @@ function panelTemplate() {
   const speechVolume = clampTtsVolume(state.ttsVolume);
   const speechRate = clampSpeechRate(localStorage.getItem('speechRate'));
   const sleepBtns = [10, 30, 50, 60].map(min => `<button class="slp-bt ${sleepLeft === min ? 'on' : ''}" data-sleep="${min}">${min}分</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">閱讀版面（各自記憶調整）</div><div class="font-opts preset-opts"><button class="font-opt ${state.readingPresetMode === 'novel' ? 'on' : ''}" data-reading-preset="novel">小說閱讀</button><button class="font-opt ${state.readingPresetMode === 'english' ? 'on' : ''}" data-reading-preset="english">英文舒讀</button></div><div class="sg-hint">目前版面的字體、字級、行高、段距、邊距與表格模式會分開保存。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts font-builtins"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">中文宋體</button><button class="font-opt ${state.fontFamily === 'english-serif' ? 'on' : ''}" data-font="english-serif">英文襯線</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">系統黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">表格版面</div><div class="font-opts table-layout-opts"><button class="font-opt ${state.tableLayoutMode === 'standard' ? 'on' : ''}" data-table-layout-mode="standard" aria-pressed="${state.tableLayoutMode === 'standard'}">標準表格</button><button class="font-opt ${state.tableLayoutMode === 'bilingual' ? 'on' : ''}" data-table-layout-mode="bilingual" aria-pressed="${state.tableLayoutMode === 'bilingual'}">雙語表格</button></div><div class="sg-hint">雙語表格會將兩欄內容在手機顯示為上下對照卡片，寬螢幕則並排顯示；不影響一般文章段落。</div></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">字級</span><input type="range" class="spd-slider" id="fontSize" min="16" max="34" step="1" value="${state.fontSize}"><span class="spd-val" id="fontSizeVal">${state.fontSize}px</span></div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div><div class="sg-lbl layout-sub-label">左右邊距</div><div class="font-opts margin-opts"><button class="font-opt ${state.marginPreset === 'narrow' ? 'on' : ''}" data-margin-preset="narrow">窄</button><button class="font-opt ${state.marginPreset === 'standard' ? 'on' : ''}" data-margin-preset="standard">標準</button><button class="font-opt ${state.marginPreset === 'wide' ? 'on' : ''}" data-margin-preset="wide">寬</button></div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}×</span></div><div class="sg-hint">顯示值會直接套用為實際朗讀速度；指定中文聲線後，最高可調至 2.5×。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">「高速中文」沿用書閣的中文聲線優先策略；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">閱讀版面（各自記憶調整）</div><div class="font-opts preset-opts"><button class="font-opt ${state.readingPresetMode === 'novel' ? 'on' : ''}" data-reading-preset="novel">小說閱讀</button><button class="font-opt ${state.readingPresetMode === 'english' ? 'on' : ''}" data-reading-preset="english">英文舒讀</button></div><div class="sg-hint">目前版面的字體、字級、行高、段距、邊距與表格模式會分開保存。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts font-builtins"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">中文宋體</button><button class="font-opt ${state.fontFamily === 'english-serif' ? 'on' : ''}" data-font="english-serif">英文襯線</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">系統黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">表格版面</div><div class="font-opts table-layout-opts"><button class="font-opt ${state.tableLayoutMode === 'standard' ? 'on' : ''}" data-table-layout-mode="standard" aria-pressed="${state.tableLayoutMode === 'standard'}">標準表格</button><button class="font-opt ${state.tableLayoutMode === 'bilingual' ? 'on' : ''}" data-table-layout-mode="bilingual" aria-pressed="${state.tableLayoutMode === 'bilingual'}">雙語表格</button></div><div class="sg-hint">雙語表格會將兩欄內容在手機顯示為上下對照卡片，寬螢幕則並排顯示；不影響一般文章段落。</div></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">字級</span><input type="range" class="spd-slider" id="fontSize" min="16" max="34" step="1" value="${state.fontSize}"><span class="spd-val" id="fontSizeVal">${state.fontSize}px</span></div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div><div class="sg-lbl layout-sub-label">左右邊距</div><div class="font-opts margin-opts"><button class="font-opt ${state.marginPreset === 'narrow' ? 'on' : ''}" data-margin-preset="narrow">窄</button><button class="font-opt ${state.marginPreset === 'standard' ? 'on' : ''}" data-margin-preset="standard">標準</button><button class="font-opt ${state.marginPreset === 'wide' ? 'on' : ''}" data-margin-preset="wide">寬</button></div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}</span></div><div class="sg-hint">語速參數可調至 4，實際速度受 iOS 與聲線限制，並非精確倍速。換聲線或語速後，可測試同一句話的秒數。</div><button class="font-opt" id="testSpeechRate">測試目前語速</button><div class="sg-hint" role="status">${tts.diagnosticResults.map(esc).join("<br>")}</div><div class="sg-hint">iPhone 網頁朗讀在鎖屏或切換 App 後會暫停；回來點播放即可從保留的分段繼續。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">自動優先選擇繁體中文聲線；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -843,7 +871,9 @@ function renderPanel() {
 }
 
 async function openBook(id) {
+  tts.stop(true);
   state.currentBook = TxtParser.enrichBook(await DB.get('books', id));
+  tts.restorePosition();
   state.currentBook.lastReadAt = Date.now();
   await saveBook(state.currentBook);
   state.view = 'reader';
@@ -877,11 +907,12 @@ function bindPanelEvents() {
   }));
   $$('.slp-bt[data-sleep]').forEach(btn => btn.addEventListener('click', () => setSleepTimer(Number(btn.dataset.sleep))));
   $('#panelFontInput')?.addEventListener('change', async e => { const file = e.target.files[0]; if (file) { await FontManager.import(file); renderPanel(); repaginateKeepPosition(); toast('字體已匯入並套用'); } });
-  $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}×`); });
+  $('#speechRate')?.addEventListener('input', e => { localStorage.setItem('speechRate', e.target.value); $('#speechRateVal') && ($('#speechRateVal').textContent = `${Number(e.target.value).toFixed(1)}`); });
   $('#speechVoice')?.addEventListener('change', e => {
     if (e.target.value) localStorage.setItem('speechVoiceURI', e.target.value);
     else localStorage.removeItem('speechVoiceURI');
   });
+  $('#testSpeechRate')?.addEventListener('click', () => tts.testRate());
   $('#speechVolume')?.addEventListener('input', e => setTtsVolume(e.target.value));
   $('#fontSize')?.addEventListener('input', e => {
     state.fontSize = Number(e.target.value);
@@ -917,7 +948,7 @@ function bindEvents() {
   }));
   $$('[data-open]').forEach(row => row.addEventListener('click', e => { if (e.target.closest('[data-delete]')) return; openBook(row.dataset.open); }));
   $$('[data-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('books', btn.dataset.delete); state.books = (await DB.all('books')).map(TxtParser.enrichBook); render(); }));
-  $('#backBtn')?.addEventListener('click', async () => { tts.stop(); state.books = (await DB.all('books')).map(TxtParser.enrichBook); state.view = 'library'; render(); });
+  $('#backBtn')?.addEventListener('click', async () => { tts.stop(true); state.books = (await DB.all('books')).map(TxtParser.enrichBook); state.view = 'library'; render(); });
   $('#rbook')?.addEventListener(window.PointerEvent ? 'pointerup' : 'click', handleReaderTap);
   $('#rbook')?.addEventListener('dblclick', e => e.preventDefault());
   $('#rbook')?.addEventListener('touchstart', e => { if (e.touches.length > 1 && e.cancelable) e.preventDefault(); }, { passive: false });
@@ -930,7 +961,7 @@ function bindEvents() {
   $('#rfStop')?.addEventListener('click', () => tts.stop());
   $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); persistCurrentReadingLayout(); repaginateKeepPosition(); });
   $('#fontPlus')?.addEventListener('click', () => { state.fontSize = Math.min(34, state.fontSize + 2); persistCurrentReadingLayout(); repaginateKeepPosition(); });
-  $('#rfProg')?.addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); state.currentPage = Math.round(((e.clientX - r.left) / r.width) * (state.pages.length - 1)); renderPage(); });
+  $('#rfProg')?.addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); tts.stop(); state.currentPage = Math.round(((e.clientX - r.left) / r.width) * (state.pages.length - 1)); renderPage(); });
 }
 
 async function render() {
@@ -962,8 +993,12 @@ async function boot() {
 }
 window.addEventListener('resize', () => { if (state.view === 'reader' && state.currentBook) repaginateKeepPosition(); });
 document.addEventListener('visibilitychange', () => {
-  // Backgrounding invalidates speech. Foregrounding deliberately does
-  // nothing: the next utterance must come from an explicit Play action.
+  // Background speech requires an explicit Play to resume; foregrounding
+  // only reconciles the sleep deadline and visible controls.
   if (document.visibilityState === 'hidden') tts.suspendForBackground();
+  else { checkSleepDeadline(); renderTtsState(); }
 });
+window.addEventListener('pagehide', () => tts.suspendForBackground());
+window.addEventListener('pageshow', () => { checkSleepDeadline(); renderTtsState(); });
 boot().catch(err => { console.error(err); toast(`啟動失敗：${err.message}`); });
+

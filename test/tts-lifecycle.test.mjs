@@ -35,7 +35,7 @@ test('main TTS lifecycle has no automatic foreground resume or retry path', asyn
   const watchdogMethod = source.slice(source.indexOf('  armStartWatchdog('), source.indexOf('  speakNext(', source.indexOf('  armStartWatchdog(')));
 
   assert.match(visibilityHandler, /visibilityState === 'hidden'\) tts\.suspendForBackground\(\)/);
-  assert.doesNotMatch(visibilityHandler, /visibilityState === 'visible'/);
+  assert.doesNotMatch(visibilityHandler, /tts\.play\(/);
   assert.doesNotMatch(source, /autoResumeWanted|resumeAfterInterruption|retryActiveSegment|speechSynthesis\.resume/);
   assert.ok(playMethod.indexOf('invalidateSpeechState()') < playMethod.indexOf('speakNext(generation)'), 'Play must invalidate stale app state before creating the new utterance');
   assert.doesNotMatch(playMethod, /speechSynthesis\.cancel\(\)|cancelSpeechEngine\(\)/, 'Play must not cancel native speech immediately before speak');
@@ -47,8 +47,8 @@ test('pause, stop, and background suspension invalidate before canceling speech'
   const queue = source.slice(source.indexOf('class SpeechQueue'));
   const invalidate = queue.slice(queue.indexOf('  invalidateSpeechState() {'), queue.indexOf('  cancelSpeechEngine() {', queue.indexOf('  invalidateSpeechState() {')));
   const cancel = queue.slice(queue.indexOf('  cancelSpeechEngine() {'), queue.indexOf('  play() {', queue.indexOf('  cancelSpeechEngine() {')));
-  const pause = queue.slice(queue.indexOf('  pause() {'), queue.indexOf('  stop() {', queue.indexOf('  pause() {')));
-  const stop = queue.slice(queue.indexOf('  stop() {'), queue.indexOf('\n  }\n}', queue.indexOf('  stop() {')) + 4);
+  const pause = queue.slice(queue.indexOf('  pause() {'), queue.indexOf('  stop(preservePosition = false) {', queue.indexOf('  pause() {')));
+  const stop = queue.slice(queue.indexOf('  stop(preservePosition = false) {'), queue.indexOf('\n  }\n}', queue.indexOf('  stop(preservePosition = false) {')) + 4);
   const background = queue.slice(queue.indexOf('  suspendForBackground() {'), queue.indexOf('  pause() {', queue.indexOf('  suspendForBackground() {')));
 
   assert.match(invalidate, /playback\.begin\(\)/);
@@ -60,12 +60,13 @@ test('pause, stop, and background suspension invalidate before canceling speech'
   assert.doesNotMatch(pause + stop + background, /\bplay\(\)|speakNext\(/);
 });
 
-test('TTS speed supports 2.5x and locks a preferred Chinese voice per play session', async () => {
+test('TTS speed supports an extended rate range and locks a preferred Chinese voice per play session', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.match(source, /const TTS_RATE_MAX = 2\.5;/);
+  assert.match(source, /const TTS_RATE_MAX = 4;/);
   assert.match(source, /id="speechRate" min="\$\{TTS_RATE_MIN\}" max="\$\{TTS_RATE_MAX\}"/);
   assert.match(source, /u\.rate = clampSpeechRate\(/);
   assert.match(source, /this\.sessionVoice = this\.pickVoice\(\)/);
   assert.match(source, /if \(this\.sessionVoice\) u\.voice = this\.sessionVoice/);
   assert.ok(source.includes("voices.find(v => /zh-TW|zh_Hant|cmn-Hant|Taiwan/i.test(`${v.lang} ${v.name}`))"));
 });
+
