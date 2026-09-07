@@ -1,5 +1,4 @@
 import './style.css';
-import { BookAudioPlayer, audioTime } from './book-audio-player.js';
 import { TtsPlaybackGeneration } from './tts-playback-generation.js';
 import {
   createBookBlockElement,
@@ -16,7 +15,7 @@ import {
   setActiveReadingPreset,
 } from './reading-presets.js';
 
-const APP_VERSION = '0.7.0-background-audio';
+const APP_VERSION = '0.7.1-speech-only';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 4;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -35,6 +34,7 @@ if (localStorage.getItem('layoutPresetVersion') !== LAYOUT_PRESET_VERSION) {
   localStorage.setItem('layoutPresetVersion', LAYOUT_PRESET_VERSION);
 }
 const DB_NAME = 'lunashelf-db';
+// Keep version 2: devices that opened 0.7.0 must not downgrade IndexedDB.
 const DB_VERSION = 2;
 const initialReadingPresets = loadReadingPresets(localStorage);
 const initialReadingLayout = initialReadingPresets.presets[initialReadingPresets.activeId];
@@ -68,8 +68,6 @@ const state = {
   lastTapAt: 0,
   sleepUntil: Number(localStorage.getItem('sleepUntil') || 0),
   sleepTimer: null,
-  audioMode: false,
-  audioImporting: false,
 };
 
 class DB {
@@ -78,12 +76,11 @@ class DB {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
-        if (!db.objectStoreNames.contains('audio')) db.createObjectStore('audio', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('books')) db.createObjectStore('books', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('fonts')) db.createObjectStore('fonts', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
       };
-      req.onblocked = () => toast('請關閉其他 LunaShelf 分頁，再重新開啟以完成更新');
+      req.onblocked = () => toast('請關閉其他 LunaShelf 分頁後重試');
       req.onsuccess = () => { req.result.onversionchange = () => req.result.close(); resolve(req.result); };
       req.onerror = () => reject(req.error);
     });
@@ -344,9 +341,6 @@ class SpeechQueue {
     } catch (_) { /* invalid or unavailable storage */ }
   }
   testRate() {
-    bookAudio.pause();
-    bookAudio.releaseSession();
-    state.audioMode = false;
     if (!this.isSupported()) return toast('此瀏覽器不支援朗讀');
     if (this.state === 'playing') {
       this.pause();
@@ -385,8 +379,6 @@ class SpeechQueue {
   }
   play() {
     if (!state.currentBook) return toast('請先開啟一本書');
-    bookAudio.pause();
-    bookAudio.releaseSession();
     if (!this.isSupported()) return toast('這個瀏覽器不支援朗讀，請用 Safari/Edge/Chrome 測試');
     if (this.state === 'playing') return;
     if (checkSleepDeadline()) return;
@@ -487,94 +479,6 @@ class SpeechQueue {
 }
 
 const tts = new SpeechQueue();
-const audioElement = document.createElement('audio');
-audioElement.setAttribute('playsinline', '');
-audioElement.setAttribute('aria-hidden', 'true');
-// Never put the media element inside #app, which is replaced while reading.
-document.body.appendChild(audioElement);
-const bookAudio = new BookAudioPlayer({
-  audio: audioElement, storage: localStorage, urls: URL,
-  platform: { mediaSession: navigator.mediaSession, audioSession: navigator.audioSession, MediaMetadata: window.MediaMetadata },
-  changed: () => { renderTtsState(); renderAudioProgress(); },
-  deadline: () => checkSleepDeadline(),
-  beforePlay: () => { tts.pause(); state.audioMode = true; },
-});
-let bookOpenGeneration = 0;
-function playbackIsPlaying() { return state.audioMode ? bookAudio.isPlaying : tts.state === 'playing'; }
-function togglePlayback() {
-  if (!state.audioMode) return tts.state === 'playing' ? tts.pause() : tts.play();
-  if (bookAudio.isPlaying) return bookAudio.pause();
-  tts.pause();
-  return bookAudio.play();
-}
-function pausePlayback() { tts.pause(); bookAudio.pause(); }
-function renderAudioProgress() {
-  const label = $('#audioPosition');
-  const slider = $('#audioSeek');
-  if (label) label.textContent = `${audioTime(audioElement.currentTime)} / ${audioTime(audioElement.duration)}`;
-  if (slider && document.activeElement !== slider) {
-    slider.max = String(Number.isFinite(audioElement.duration) ? audioElement.duration : 0);
-    slider.value = String(audioElement.currentTime || 0);
-    slider.disabled = !Number.isFinite(audioElement.duration) || audioElement.duration <= 0;
-  }
-  const button = $('#audioPlay');
-  if (button) button.textContent = bookAudio.isPlaying ? '暫停' : '播放音訊';
-}
-async function importBookAudio(file) {
-  if (!file || !state.currentBook || state.audioImporting) return;
-  const book = state.currentBook;
-  const generation = bookOpenGeneration;
-  if (!/\.(m4a|m4b|mp3|wav|aac|mp4|aiff?|caf)$/i.test(file.name) && !file.type.startsWith('audio/')) return toast('請選擇音訊檔，例如 M4A 或 MP3');
-  state.audioImporting = true;
-  renderPanel();
-  toast('正在將音訊儲存到手機…');
-  try {
-    const record = { id: book.id, name: file.name, blob: file, size: file.size };
-    await DB.put('audio', record);
-    if (generation !== bookOpenGeneration || state.currentBook?.id !== book.id) return;
-    tts.pause();
-    bookAudio.detach();
-    try { localStorage.removeItem(`book-audio:position:${book.id}`); } catch (_) {}
-    bookAudio.attach(book, record);
-    state.audioMode = true;
-    toast('音訊已匯入，點播放後即可測試鎖屏聽書');
-  } catch (err) {
-    console.warn('audio import failed', err);
-    toast('音訊儲存失敗，請確認空間足夠，或改用較小的音訊檔');
-  } finally {
-    state.audioImporting = false;
-    renderPanel();
-    renderTtsState();
-  }
-}
-function audioPanelTemplate() {
-  const available = bookAudio.bookId === state.currentBook?.id;
-  return `<div class="sg audio-settings"><div class="sg-lbl">鎖屏聽書 · 音訊模式</div>
-    <p class="sg-hint">匯入已轉好的小說音訊，播放後可鎖屏或切換 App。音訊位置獨立記憶，文字不會自動跟讀。</p>
-    <label class="font-import-btn">${state.audioImporting ? '正在儲存…' : available ? '更換本書音訊' : '匯入本書音訊'}<input id="bookAudioInput" type="file" accept="audio/*,.m4a,.m4b,.mp3,.wav,.aac,.mp4,.aiff,.caf" ${state.audioImporting ? 'disabled' : ''} hidden></label>
-    ${available ? `<p class="sg-hint">${esc(bookAudio.name)}</p><div class="font-opts"><button class="font-opt ${state.audioMode ? 'on' : ''}" id="useAudio">音訊模式</button><button class="font-opt ${!state.audioMode ? 'on' : ''}" id="useSpeech">即時朗讀</button></div>
-    <div class="audio-buttons"><button class="font-opt" id="audioBack">倒退 15 秒</button><button class="font-opt" id="audioPlay">${bookAudio.isPlaying ? '暫停' : '播放音訊'}</button><button class="font-opt" id="audioForward">前進 15 秒</button></div>
-    <div class="sg-hint" id="audioPosition">${audioTime(audioElement.currentTime)} / ${audioTime(audioElement.duration)}</div><input id="audioSeek" class="audio-seek" type="range" aria-label="音訊播放位置" min="0" max="${Number.isFinite(audioElement.duration) ? audioElement.duration : 0}" value="${audioElement.currentTime || 0}" step="1">
-    <label class="spd-wrap"><span class="sg-hint">音訊倍速</span><input class="spd-slider" id="audioRate" type="range" min="0.5" max="4" step="0.1" value="${bookAudio.rate}"><span id="audioRateValue" class="spd-val">${bookAudio.rate.toFixed(1)}×</span></label>
-    <p class="sg-hint">音訊倍速與下方即時朗讀的語速分開設定。iOS 背景定時停止可能延後。</p><button class="font-opt" id="removeAudio" ${state.audioImporting ? 'disabled' : ''}>移除本書音訊</button>` : ''}
-    <details class="audio-guide"><summary>只用 iPhone，如何把小說轉成音訊？</summary>
-    <p>第一次：打開「捷徑」新增捷徑，命名為「LunaShelf轉音訊」，依序加入三個動作：</p><ol><li>取得剪貼簿</li><li>用文字製作語音音訊（Make Spoken Audio from Text），輸入選上一個動作的剪貼簿，選擇中文聲音</li><li>儲存檔案，輸入選語音音訊，開啟「詢問儲存位置」</li></ol>
-    <p>之後在這裡複製文字，執行捷徑，將音訊存到「檔案」，再回來匯入。先以本章測試；全書轉檔可能耗時或失敗。可用已下載的系統聲音，不需 Mac 或第三方語音帳號。</p>
-    <label>轉檔範圍 <select id="audioTextScope" class="font-opt"><option value="chapter">目前章節</option><option value="book">整本書</option></select></label><div class="audio-buttons"><button class="font-opt" id="copyAudioText">① 複製文字</button><a class="font-opt" href="shortcuts://run-shortcut?name=${encodeURIComponent('LunaShelf轉音訊')}">② 開啟轉檔捷徑</a></div><p class="sg-hint">找不到捷徑時，請先依上方建立。無法從 PWA 開啟時，可手動切到「捷徑」執行。</p>
-    </details></div>`;
-}
-async function copyAudioText() {
-  const book = state.currentBook;
-  if (!book) return;
-  const chapter = getChapterIndex(state.pages[state.currentPage]?.startPara || 0);
-  const scope = $('#audioTextScope')?.value;
-  const start = scope === 'book' ? 0 : (book.chapters[chapter]?.idx || 0);
-  const end = scope === 'book' ? book.paragraphs.length : (book.chapters[chapter + 1]?.idx ?? book.paragraphs.length);
-  const text = book.paragraphs.slice(start, end).join('\n');
-  try { await navigator.clipboard.writeText(text); toast(`已複製 ${text.length.toLocaleString()} 字，請開啟轉檔捷徑`); }
-  catch (_) { toast('無法複製，請從原始 TXT 選取文字，複製後執行捷徑'); }
-}
-
 
 function toast(msg) {
   const node = document.createElement('div');
@@ -846,9 +750,9 @@ function highlightPara(idx) {
 }
 function renderTtsState() {
   const status = $('#ttsStatus');
-  if (status) status.textContent = state.audioMode ? (bookAudio.notice || (bookAudio.isPlaying ? '音訊播放中 · 可鎖屏聽書' : '音訊已暫停')) : (tts.notice || (tts.state === 'playing' ? '朗讀中' : ''));
+  if (status) status.textContent = tts.notice || (tts.state === 'playing' ? '朗讀中' : '');
   const btn = $('#rfPlay');
-  if (btn) btn.textContent = playbackIsPlaying() ? '⏸' : '▶';
+  if (btn) btn.textContent = tts.state === 'playing' ? '⏸' : '▶';
   const sleepBtn = $('#sleepBtn');
   if (sleepBtn) {
     const left = sleepMinutesLeft();
@@ -862,9 +766,8 @@ function checkSleepDeadline() {
   clearTimeout(state.sleepTimer);
   state.sleepUntil = 0;
   localStorage.removeItem('sleepUntil');
-  pausePlayback();
+  tts.pause();
   tts.notice = '定時結束，已暫停朗讀';
-  bookAudio.notice = '定時結束，已暫停音訊';
   renderPanel();
   renderTtsState();
   return true;
@@ -881,7 +784,7 @@ function setSleepTimer(minutes) {
   } else {
     state.sleepUntil = Date.now() + minutes * 60000;
     localStorage.setItem('sleepUntil', String(state.sleepUntil));
-    state.sleepTimer = setTimeout(() => { pausePlayback(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, minutes * 60000);
+    state.sleepTimer = setTimeout(() => { tts.pause(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, minutes * 60000);
     toast(`已設定 ${minutes} 分鐘後停止`);
   }
   renderPanel();
@@ -889,7 +792,7 @@ function setSleepTimer(minutes) {
 }
 function restoreSleepTimer() {
   const left = state.sleepUntil - Date.now();
-  if (left > 0) state.sleepTimer = setTimeout(() => { pausePlayback(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, left);
+  if (left > 0) state.sleepTimer = setTimeout(() => { tts.pause(); state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); toast('定時結束，已停止朗讀'); renderPanel(); renderTtsState(); }, left);
   else { state.sleepUntil = 0; localStorage.removeItem('sleepUntil'); }
 }
 
@@ -956,7 +859,7 @@ function panelTemplate() {
   const speechVolume = clampTtsVolume(state.ttsVolume);
   const speechRate = clampSpeechRate(localStorage.getItem('speechRate'));
   const sleepBtns = [10, 30, 50, 60].map(min => `<button class="slp-bt ${sleepLeft === min ? 'on' : ''}" data-sleep="${min}">${min}分</button>`).join('');
-  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody">${audioPanelTemplate()}<div class="sg"><div class="sg-lbl">閱讀版面（各自記憶調整）</div><div class="font-opts preset-opts"><button class="font-opt ${state.readingPresetMode === 'novel' ? 'on' : ''}" data-reading-preset="novel">小說閱讀</button><button class="font-opt ${state.readingPresetMode === 'english' ? 'on' : ''}" data-reading-preset="english">英文舒讀</button></div><div class="sg-hint">目前版面的字體、字級、行高、段距、邊距與表格模式會分開保存。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts font-builtins"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">中文宋體</button><button class="font-opt ${state.fontFamily === 'english-serif' ? 'on' : ''}" data-font="english-serif">英文襯線</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">系統黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">表格版面</div><div class="font-opts table-layout-opts"><button class="font-opt ${state.tableLayoutMode === 'standard' ? 'on' : ''}" data-table-layout-mode="standard" aria-pressed="${state.tableLayoutMode === 'standard'}">標準表格</button><button class="font-opt ${state.tableLayoutMode === 'bilingual' ? 'on' : ''}" data-table-layout-mode="bilingual" aria-pressed="${state.tableLayoutMode === 'bilingual'}">雙語表格</button></div><div class="sg-hint">雙語表格會將兩欄內容在手機顯示為上下對照卡片，寬螢幕則並排顯示；不影響一般文章段落。</div></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">字級</span><input type="range" class="spd-slider" id="fontSize" min="16" max="34" step="1" value="${state.fontSize}"><span class="spd-val" id="fontSizeVal">${state.fontSize}px</span></div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div><div class="sg-lbl layout-sub-label">左右邊距</div><div class="font-opts margin-opts"><button class="font-opt ${state.marginPreset === 'narrow' ? 'on' : ''}" data-margin-preset="narrow">窄</button><button class="font-opt ${state.marginPreset === 'standard' ? 'on' : ''}" data-margin-preset="standard">標準</button><button class="font-opt ${state.marginPreset === 'wide' ? 'on' : ''}" data-margin-preset="wide">寬</button></div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}</span></div><div class="sg-hint">語速參數可調至 4，實際速度受 iOS 與聲線限制，並非精確倍速。換聲線或語速後，可測試同一句話的秒數；若提高參數後秒數相同，表示目前聲線已達速度上限。</div><button class="font-opt" id="testSpeechRate">測試目前語速</button><div class="sg-hint" role="status">${tts.diagnosticResults.map(esc).join("<br>")}</div><div class="sg-hint">iPhone 網頁朗讀在鎖屏或切換 App 後會暫停；回來點播放即可從保留的分段繼續。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">自動優先選擇繁體中文聲線；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div></div></div></div>`;
+  return `<div class="pback on"><div class="pov" id="panelClose"></div><div class="pbox"><div class="phd"><span class="phd-t">⚙ 閱讀設定</span><button class="pcls" id="panelX">×</button></div><div class="pbody"><div class="sg"><div class="sg-lbl">閱讀版面（各自記憶調整）</div><div class="font-opts preset-opts"><button class="font-opt ${state.readingPresetMode === 'novel' ? 'on' : ''}" data-reading-preset="novel">小說閱讀</button><button class="font-opt ${state.readingPresetMode === 'english' ? 'on' : ''}" data-reading-preset="english">英文舒讀</button></div><div class="sg-hint">目前版面的字體、字級、行高、段距、邊距與表格模式會分開保存。</div></div><div class="sg"><div class="sg-lbl">定時關閉 ${sleepLeft ? `· 剩 ${sleepLeft} 分` : ''}</div><div class="slp-wrap">${sleepBtns}</div></div><div class="sg"><div class="sg-lbl">字體</div><div class="font-opts font-builtins"><button class="font-opt ${state.fontFamily === 'serif' ? 'on' : ''}" data-font="serif">中文宋體</button><button class="font-opt ${state.fontFamily === 'english-serif' ? 'on' : ''}" data-font="english-serif">英文襯線</button><button class="font-opt ${state.fontFamily === 'system' ? 'on' : ''}" data-font="system">系統黑體</button></div><div class="font-list">${importedFonts || '<div class="sg-hint">尚未匯入自訂字體</div>'}</div><label class="font-import-btn">＋ 匯入字體<input id="panelFontInput" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden></label></div><div class="sg"><div class="sg-lbl">表格版面</div><div class="font-opts table-layout-opts"><button class="font-opt ${state.tableLayoutMode === 'standard' ? 'on' : ''}" data-table-layout-mode="standard" aria-pressed="${state.tableLayoutMode === 'standard'}">標準表格</button><button class="font-opt ${state.tableLayoutMode === 'bilingual' ? 'on' : ''}" data-table-layout-mode="bilingual" aria-pressed="${state.tableLayoutMode === 'bilingual'}">雙語表格</button></div><div class="sg-hint">雙語表格會將兩欄內容在手機顯示為上下對照卡片，寬螢幕則並排顯示；不影響一般文章段落。</div></div><div class="sg"><div class="sg-lbl">閱讀排版</div><div class="spd-wrap"><span class="sg-hint">字級</span><input type="range" class="spd-slider" id="fontSize" min="16" max="34" step="1" value="${state.fontSize}"><span class="spd-val" id="fontSizeVal">${state.fontSize}px</span></div><div class="spd-wrap"><span class="sg-hint">行高</span><input type="range" class="spd-slider" id="lineHeight" min="1.0" max="2.5" step="0.1" value="${lineHeight}"><span class="spd-val" id="lineHeightVal">${lineHeight}×</span></div><div class="spd-wrap"><span class="sg-hint">段距</span><input type="range" class="spd-slider" id="paragraphSpacing" min="0" max="2" step="0.1" value="${paragraphSpacing}"><span class="spd-val" id="paragraphSpacingVal">${paragraphSpacing}行</span></div><div class="sg-hint">段距以「行」為單位；0.5 行就是 tReader 預設。</div><div class="sg-lbl layout-sub-label">左右邊距</div><div class="font-opts margin-opts"><button class="font-opt ${state.marginPreset === 'narrow' ? 'on' : ''}" data-margin-preset="narrow">窄</button><button class="font-opt ${state.marginPreset === 'standard' ? 'on' : ''}" data-margin-preset="standard">標準</button><button class="font-opt ${state.marginPreset === 'wide' ? 'on' : ''}" data-margin-preset="wide">寬</button></div></div><div class="sg"><div class="sg-lbl">聽書語速</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechRate" min="${TTS_RATE_MIN}" max="${TTS_RATE_MAX}" step="0.1" value="${speechRate}"><span class="spd-val" id="speechRateVal">${speechRate.toFixed(1)}</span></div><div class="sg-hint">語速參數可調至 4，實際速度受 iOS 與聲線限制，並非精確倍速。換聲線或語速後，可測試同一句話的秒數；若提高參數後秒數相同，表示目前聲線已達速度上限。</div><button class="font-opt" id="testSpeechRate">測試目前語速</button><div class="sg-hint" role="status">${tts.diagnosticResults.map(esc).join("<br>")}</div><div class="sg-hint">iPhone 網頁朗讀在鎖屏或切換 App 後會暫停；回來點播放即可從保留的分段繼續。</div></div><div class="sg"><div class="sg-lbl">朗讀聲線</div><select class="font-opt" id="speechVoice">${ttsVoiceOptions()}</select><div class="sg-hint">自動優先選擇繁體中文聲線；變更後於下次按播放時生效。</div></div><div class="sg"><div class="sg-lbl">AirPods／藍牙聽書音量</div><div class="spd-wrap"><input type="range" class="spd-slider" id="speechVolume" min="0.1" max="1" step="0.05" value="${speechVolume}"><span class="spd-val" id="speechVolumeVal">${Math.round(speechVolume * 100)}%</span></div><div class="sg-hint">若 AirPods 觸控音量無法控制網頁朗讀，請用這裡調整。此設定會套用到下一段朗讀，並盡量即時調整目前段落。</div></div></div></div></div>`;
 }
 function renderPanel() {
   const root = $('#panelRoot');
@@ -971,15 +874,8 @@ function renderPanel() {
 }
 
 async function openBook(id) {
-  const generation = ++bookOpenGeneration;
   tts.stop(true);
-  bookAudio.detach();
-  state.audioMode = false;
-  const [book, audio] = await Promise.all([DB.get('books', id), DB.get('audio', id)]);
-  if (generation !== bookOpenGeneration || !book) return;
-  state.currentBook = TxtParser.enrichBook(book);
-  bookAudio.attach(state.currentBook, audio);
-  state.audioMode = Boolean(audio);
+  state.currentBook = TxtParser.enrichBook(await DB.get('books', id));
   tts.restorePosition();
   state.currentBook.lastReadAt = Date.now();
   await saveBook(state.currentBook);
@@ -989,26 +885,6 @@ async function openBook(id) {
   await render();
 }
 function bindPanelEvents() {
-  $('#bookAudioInput')?.addEventListener('change', e => importBookAudio(e.target.files[0]));
-  $('#copyAudioText')?.addEventListener('click', copyAudioText);
-  $('#useAudio')?.addEventListener('click', () => { tts.pause(); state.audioMode = true; renderPanel(); renderTtsState(); });
-  $('#useSpeech')?.addEventListener('click', () => { bookAudio.pause(); bookAudio.releaseSession(); state.audioMode = false; renderPanel(); renderTtsState(); });
-  $('#audioPlay')?.addEventListener('click', () => { state.audioMode = true; togglePlayback(); });
-  $('#audioBack')?.addEventListener('click', () => bookAudio.skip(-15));
-  $('#audioForward')?.addEventListener('click', () => bookAudio.skip(15));
-  $('#audioSeek')?.addEventListener('change', e => bookAudio.seekTo(e.target.value));
-  $('#audioRate')?.addEventListener('input', e => { bookAudio.setRate(e.target.value); $('#audioRateValue').textContent = `${bookAudio.rate.toFixed(1)}×`; });
-  $('#removeAudio')?.addEventListener('click', async () => {
-    const id = state.currentBook.id;
-    if (state.audioImporting) return;
-    try {
-      await DB.delete('audio', id);
-      if (state.currentBook?.id !== id) return;
-      bookAudio.detach(); state.audioMode = false;
-      try { localStorage.removeItem(`book-audio:position:${id}`); } catch (_) {}
-      renderPanel(); renderTtsState(); toast('已移除音訊，小說文字仍保留');
-    } catch (_) { toast('移除失敗，請重試'); }
-  });
   $('#panelClose')?.addEventListener('click', closePanel);
   $('#panelX')?.addEventListener('click', closePanel);
   $$('[data-chapter]').forEach(el => el.addEventListener('click', () => jumpChapter(Number(el.dataset.chapter))));
@@ -1074,8 +950,8 @@ function bindEvents() {
     render();
   }));
   $$('[data-open]').forEach(row => row.addEventListener('click', e => { if (e.target.closest('[data-delete]')) return; openBook(row.dataset.open); }));
-  $$('[data-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('books', btn.dataset.delete); await DB.delete('audio', btn.dataset.delete); state.books = (await DB.all('books')).map(TxtParser.enrichBook); render(); }));
-  $('#backBtn')?.addEventListener('click', async () => { ++bookOpenGeneration; tts.stop(true); bookAudio.detach(); state.audioMode = false; state.books = (await DB.all('books')).map(TxtParser.enrichBook); state.view = 'library'; render(); });
+  $$('[data-delete]').forEach(btn => btn.addEventListener('click', async e => { e.stopPropagation(); await DB.delete('books', btn.dataset.delete); state.books = (await DB.all('books')).map(TxtParser.enrichBook); render(); }));
+  $('#backBtn')?.addEventListener('click', async () => { tts.stop(true); state.books = (await DB.all('books')).map(TxtParser.enrichBook); state.view = 'library'; render(); });
   $('#rbook')?.addEventListener(window.PointerEvent ? 'pointerup' : 'click', handleReaderTap);
   $('#rbook')?.addEventListener('dblclick', e => e.preventDefault());
   $('#rbook')?.addEventListener('touchstart', e => { if (e.touches.length > 1 && e.cancelable) e.preventDefault(); }, { passive: false });
@@ -1084,8 +960,8 @@ function bindEvents() {
   $('#bottomTocBtn')?.addEventListener('click', () => openPanel('toc'));
   $('#bottomSetBtn')?.addEventListener('click', () => openPanel('settings'));
   $('#sleepBtn')?.addEventListener('click', () => sleepMinutesLeft() ? setSleepTimer(0) : openPanel('settings'));
-  $('#rfPlay')?.addEventListener('click', togglePlayback);
-  $('#rfStop')?.addEventListener('click', () => state.audioMode ? bookAudio.stop() : tts.stop());
+  $('#rfPlay')?.addEventListener('click', () => tts.state === 'playing' ? tts.pause() : tts.play());
+  $('#rfStop')?.addEventListener('click', () => tts.stop());
   $('#fontMinus')?.addEventListener('click', () => { state.fontSize = Math.max(16, state.fontSize - 2); persistCurrentReadingLayout(); repaginateKeepPosition(); });
   $('#fontPlus')?.addEventListener('click', () => { state.fontSize = Math.min(34, state.fontSize + 2); persistCurrentReadingLayout(); repaginateKeepPosition(); });
   $('#rfProg')?.addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); tts.stop(); state.currentPage = Math.round(((e.clientX - r.left) / r.width) * (state.pages.length - 1)); renderPage(); });
@@ -1124,9 +1000,8 @@ document.addEventListener('visibilitychange', () => {
   // only reconciles the sleep deadline and visible controls.
   if (document.visibilityState === 'hidden') tts.suspendForBackground();
   else { checkSleepDeadline(); renderTtsState(); }
-  // Real audio remains active when hidden. Save only; never pause it here.
-  bookAudio.save();
 });
-window.addEventListener('pagehide', () => { tts.suspendForBackground(); bookAudio.save(); });
+window.addEventListener('pagehide', () => tts.suspendForBackground());
 window.addEventListener('pageshow', () => { checkSleepDeadline(); renderTtsState(); });
 boot().catch(err => { console.error(err); toast(`啟動失敗：${err.message}`); });
+
