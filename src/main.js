@@ -15,7 +15,7 @@ import {
   setActiveReadingPreset,
 } from './reading-presets.js';
 
-const APP_VERSION = '0.7.1-speech-only';
+const APP_VERSION = '0.7.2-english-tts';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 4;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -238,14 +238,29 @@ class SpeechQueue {
     this.diagnostic = false;
     this.diagnosticResults = [];
     this.startWatchdog = null;
-    this.sessionVoice = null;
+    this.sessionVoices = { zh: null, en: null };
   }
   isSupported() { return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window; }
-  pickVoice() {
+  detectLanguage(text) {
+    const chinese = (text.match(/[\u3400-\u9fff\uf900-\ufaff]/g) || []).length;
+    const english = (text.match(/[A-Za-z]/g) || []).length;
+    return english > chinese ? 'en' : 'zh';
+  }
+  isEnglishVoice(voice) {
+    return /^en(?:[-_]|$)/i.test(voice?.lang || '') || /English/i.test(voice?.name || '');
+  }
+  pickVoice(language = 'zh') {
     const voices = speechSynthesis.getVoices();
-    const savedVoiceURI = localStorage.getItem('speechVoiceURI');
+    const savedVoiceURI = localStorage.getItem(language === 'en' ? 'speechEnglishVoiceURI' : 'speechVoiceURI');
     if (savedVoiceURI === '__auto__') return null;
-    return voices.find(v => savedVoiceURI && v.voiceURI === savedVoiceURI)
+    const savedVoice = voices.find(v => savedVoiceURI && v.voiceURI === savedVoiceURI);
+    if (language === 'en') {
+      if (savedVoice && this.isEnglishVoice(savedVoice)) return savedVoice;
+      return voices.find(v => /^en[-_]US$/i.test(v.lang || ''))
+        || voices.find(v => this.isEnglishVoice(v))
+        || null;
+    }
+    return savedVoice
       || voices.find(v => /zh-TW|zh_Hant|cmn-Hant|Taiwan/i.test(`${v.lang} ${v.name}`))
       || voices.find(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
   }
@@ -256,7 +271,7 @@ class SpeechQueue {
     let rest = src;
     while (rest.length > this.maxChars) {
       const win = rest.slice(0, this.maxChars);
-      const cut = Math.max(win.lastIndexOf('。'), win.lastIndexOf('！'), win.lastIndexOf('？'), win.lastIndexOf('…'));
+      const cut = Math.max(win.lastIndexOf('。'), win.lastIndexOf('！'), win.lastIndexOf('？'), win.lastIndexOf('…'), win.lastIndexOf('.'), win.lastIndexOf('!'), win.lastIndexOf('?'));
       const at = cut > 80 ? cut + 1 : this.maxChars;
       out.push(rest.slice(0, at).trim());
       rest = rest.slice(at).trim();
@@ -266,8 +281,10 @@ class SpeechQueue {
   }
   makeUtterance(text, paraIdx, generation) {
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'zh-TW';
-    if (this.sessionVoice) u.voice = this.sessionVoice;
+    const language = this.detectLanguage(text);
+    u.lang = language === 'en' ? 'en-US' : 'zh-TW';
+    const voice = this.sessionVoices[language];
+    if (voice) u.voice = voice;
     u.rate = clampSpeechRate(localStorage.getItem('speechRate'));
     u.pitch = 1;
     u.volume = state.ttsVolume;
@@ -347,7 +364,7 @@ class SpeechQueue {
       return toast('已暫停，請再點一次測試語速');
     }
     const generation = this.invalidateSpeechState();
-    this.sessionVoice = this.pickVoice();
+    this.sessionVoices = { zh: this.pickVoice('zh'), en: this.pickVoice('en') };
     this.diagnostic = true;
     this.state = 'playing';
     this.notice = '正在測試語速；可按暫停中止';
@@ -393,7 +410,7 @@ class SpeechQueue {
     // asynchronously and clear the fresh utterance queued below (WebKit #191745).
     const generation = this.invalidateSpeechState();
     // Resolve once per explicit Play so iOS cannot switch voices mid-session.
-    this.sessionVoice = this.pickVoice();
+    this.sessionVoices = { zh: this.pickVoice('zh'), en: this.pickVoice('en') };
     this.prepareFrom(startPara);
     this.resumePara = startPara;
     this.state = 'playing';
@@ -838,12 +855,16 @@ function readerTemplate() {
       <div id="panelRoot"></div>
     </section>`;
 }
-function ttsVoiceOptions() {
-  const selected = localStorage.getItem('speechVoiceURI') || '';
+function ttsVoiceOptions(language = 'zh') {
+  const storageKey = language === 'en' ? 'speechEnglishVoiceURI' : 'speechVoiceURI';
+  const selected = localStorage.getItem(storageKey) || '';
   const voices = 'speechSynthesis' in window ? speechSynthesis.getVoices() : [];
-  const chineseVoices = voices.filter(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
-  const options = chineseVoices.map(v => `<option value="${esc(v.voiceURI)}" ${selected === v.voiceURI ? 'selected' : ''}>${esc(v.name)}（${esc(v.lang)}）</option>`).join('');
-  return `<option value="" ${selected === '' ? 'selected' : ''}>中文優先（自動選擇）</option><option value="__auto__" ${selected === '__auto__' ? 'selected' : ''}>系統自動聲線</option>${options}`;
+  const matchingVoices = language === 'en'
+    ? voices.filter(v => /^en(?:[-_]|$)/i.test(v.lang || '') || /English/i.test(v.name || ''))
+    : voices.filter(v => /zh|cmn|han/i.test(`${v.lang} ${v.name}`));
+  const options = matchingVoices.map(v => `<option value="${esc(v.voiceURI)}" ${selected === v.voiceURI ? 'selected' : ''}>${esc(v.name)}（${esc(v.lang)}）</option>`).join('');
+  const automaticLabel = language === 'en' ? '英文優先（自動選擇）' : '中文優先（自動選擇）';
+  return `<option value="" ${selected === '' ? 'selected' : ''}>${automaticLabel}</option><option value="__auto__" ${selected === '__auto__' ? 'selected' : ''}>系統自動聲線</option>${options}`;
 }
 function panelTemplate() {
   if (!state.panel) return '';
@@ -887,6 +908,20 @@ async function openBook(id) {
 function bindPanelEvents() {
   $('#panelClose')?.addEventListener('click', closePanel);
   $('#panelX')?.addEventListener('click', closePanel);
+  const chineseVoiceSelect = $('#speechVoice');
+  if (chineseVoiceSelect && !$('#speechEnglishVoice')) {
+    chineseVoiceSelect.setAttribute('aria-label', '中文朗讀聲線');
+    const englishVoiceLabel = document.createElement('div');
+    englishVoiceLabel.className = 'sg-hint';
+    englishVoiceLabel.textContent = '英文段落聲線';
+    const englishVoiceSelect = document.createElement('select');
+    englishVoiceSelect.className = 'font-opt';
+    englishVoiceSelect.id = 'speechEnglishVoice';
+    englishVoiceSelect.setAttribute('aria-label', '英文朗讀聲線');
+    englishVoiceSelect.innerHTML = ttsVoiceOptions('en');
+    chineseVoiceSelect.insertAdjacentElement('afterend', englishVoiceLabel);
+    englishVoiceLabel.insertAdjacentElement('afterend', englishVoiceSelect);
+  }
   $$('[data-chapter]').forEach(el => el.addEventListener('click', () => jumpChapter(Number(el.dataset.chapter))));
   $$('[data-reading-preset]').forEach(btn => btn.addEventListener('click', () => applyReadingPresetMode(btn.dataset.readingPreset)));
   $$('[data-font]').forEach(btn => btn.addEventListener('click', () => { state.fontFamily = btn.dataset.font; persistCurrentReadingLayout(); closePanel(); repaginateKeepPosition(); }));
@@ -914,6 +949,10 @@ function bindPanelEvents() {
   $('#speechVoice')?.addEventListener('change', e => {
     if (e.target.value) localStorage.setItem('speechVoiceURI', e.target.value);
     else localStorage.removeItem('speechVoiceURI');
+  });
+  $('#speechEnglishVoice')?.addEventListener('change', e => {
+    if (e.target.value) localStorage.setItem('speechEnglishVoiceURI', e.target.value);
+    else localStorage.removeItem('speechEnglishVoiceURI');
   });
   $('#testSpeechRate')?.addEventListener('click', () => tts.testRate());
   $('#speechVolume')?.addEventListener('input', e => setTtsVolume(e.target.value));
