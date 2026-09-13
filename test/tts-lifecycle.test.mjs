@@ -60,13 +60,15 @@ test('pause, stop, and background suspension invalidate before canceling speech'
   assert.doesNotMatch(pause + stop + background, /\bplay\(\)|speakNext\(/);
 });
 
-test('TTS speed supports an extended rate range and locks a preferred Chinese voice per play session', async () => {
+test('TTS speed supports an extended rate range and locks language-specific voices per play session', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(source, /const TTS_RATE_MAX = 4;/);
   assert.match(source, /id="speechRate" min="\$\{TTS_RATE_MIN\}" max="\$\{TTS_RATE_MAX\}"/);
   assert.match(source, /u\.rate = clampSpeechRate\(/);
-  assert.match(source, /this\.sessionVoice = this\.pickVoice\(\)/);
-  assert.match(source, /if \(this\.sessionVoice\) u\.voice = this\.sessionVoice/);
+  assert.match(source, /this\.sessionVoices = \{ zh: this\.pickVoice\('zh'\), en: this\.pickVoice\('en'\) \}/);
+  assert.match(source, /u\.lang = language === 'en' \? 'en-US' : 'zh-TW'/);
+  assert.match(source, /const voice = this\.sessionVoices\[language\]/);
+  assert.match(source, /speechEnglishVoiceURI/);
   assert.ok(source.includes("voices.find(v => /zh-TW|zh_Hant|cmn-Hant|Taiwan/i.test(`${v.lang} ${v.name}`))"));
 });
 

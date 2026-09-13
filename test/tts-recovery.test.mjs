@@ -4,14 +4,14 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { TtsPlaybackGeneration } from '../src/tts-playback-generation.js';
 const source = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-function setup() {
+function setup(voices = []) {
   const saved = new Map(), timers = new Map(), spoken = [];
   let nextTimer = 0;
   const state = {currentBook: {id:'one', paragraphs:['甲'.repeat(600), '第二段'], progressPara:0}, pages:[{startPara:0}], currentPage:0, ttsVolume:1};
   const context = vm.createContext({state, TtsPlaybackGeneration, console,
     localStorage: {getItem:k=>saved.get(k) ?? null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
     SpeechSynthesisUtterance: class {constructor(text){this.text=text;}},
-    speechSynthesis:{getVoices:()=>[],speak:u=>spoken.push(u),cancel:()=>{},speaking:true,pending:true},
+    speechSynthesis:{getVoices:()=>voices,speak:u=>spoken.push(u),cancel:()=>{},speaking:true,pending:true},
     clampSpeechRate:()=>4, performance:{now:()=>1000},
     clearTimeout:id=>timers.delete(id), setTimeout:fn=>{timers.set(++nextTimer,fn);return nextTimer;},
     renderTtsState(){},renderPanel(){},highlightPara(){},saveProgressFromPage(){},toast(){},checkSleepDeadline:()=>false,
@@ -53,4 +53,23 @@ test('leaving a book preserves its checkpoint, explicit stop clears it',()=>{
 test('cursor is isolated per book and malformed storage is ignored',()=>{
   const {q,state,saved}=setup();q.play();q.pause();state.currentBook.id='two';q.restorePosition();
   assert.equal(q.resumePara,null);saved.set('tts-position:two','bad json');q.restorePosition();assert.equal(q.resumePara,null);
+});
+
+test('English segments use an independent saved English voice and punctuation boundary',()=>{
+  const chineseVoice = { voiceURI: 'zh-tw', name: 'Mei-Jia', lang: 'zh-TW' };
+  const englishVoice = { voiceURI: 'en-us', name: 'Samantha', lang: 'en-US' };
+  const {q,spoken,saved,state}=setup([chineseVoice, englishVoice]);
+  saved.set('speechVoiceURI', 'zh-tw');
+  saved.set('speechEnglishVoiceURI', 'en-us');
+  state.currentBook.paragraphs = ['這是中文段落。', 'This is an English paragraph.'];
+  q.play();
+  assert.equal(spoken[0].lang, 'zh-TW');
+  assert.equal(spoken[0].voice, chineseVoice);
+  spoken[0].onend();
+  assert.equal(spoken[1].lang, 'en-US');
+  assert.equal(spoken[1].voice, englishVoice);
+  saved.set('speechEnglishVoiceURI', 'zh-tw');
+  assert.equal(q.pickVoice('en'), englishVoice, 'a Chinese saved voice cannot leak into English segments');
+  const split = q.splitText(`${'A'.repeat(100)}. ${'B'.repeat(300)}`);
+  assert.ok(split[0].endsWith('.'));
 });
