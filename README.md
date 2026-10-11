@@ -21,7 +21,7 @@ TXT-first personal novel reader for Tony.
 - Separate, persistent novel and English reading layouts (font, size, line height, paragraph spacing, margins, and table mode)
 - English comfort typography with left alignment and an iPhone-friendly serif stack
 - Queue-based Chinese/English TTS with independently selected voices
-- Optional, default-OFF 背景聽書（實驗）: a single silent WAV companion and best-effort Media Session play/pause/stop controls. iOS background execution is not guaranteed; see [experiment lifecycle and real-device QA](docs/background-tts-experiment.md).
+- Foreground-only TTS with explicit resume after hiding/locking. 背景聽書（實驗） is disabled in 0.7.4 because companion media may interrupt Web Speech; saved preferences and books are retained. See [hotfix diagnosis and real-device QA](docs/background-tts-experiment.md).
 - Manual force-refresh / cache clearing controls
 
 ## Local development

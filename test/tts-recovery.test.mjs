@@ -9,7 +9,7 @@ function setup(voices = []) {
   const saved = new Map(), timers = new Map(), spoken = [];
   let nextTimer = 0;
   const state = {currentBook: {id:'one', paragraphs:['甲'.repeat(600), '第二段'], progressPara:0}, pages:[{startPara:0}], currentPage:0, ttsVolume:1};
-  const context = vm.createContext({state, TtsPlaybackGeneration, TtsBackgroundSession, console,
+  const context = vm.createContext({state, TtsPlaybackGeneration, TtsBackgroundSession, BACKGROUND_TTS_AVAILABLE: false, console,
     localStorage: {getItem:k=>saved.get(k) ?? null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
     SpeechSynthesisUtterance: class {constructor(text){this.text=text;}},
     speechSynthesis:{getVoices:()=>voices,speak:u=>spoken.push(u),cancel:()=>{},speaking:true,pending:true},

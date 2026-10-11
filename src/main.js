@@ -16,7 +16,10 @@ import {
   setActiveReadingPreset,
 } from './reading-presets.js';
 
-const APP_VERSION = '0.7.3-background-tts-experiment';
+const APP_VERSION = '0.7.4-foreground-tts-hotfix';
+// The silent media experiment can interrupt Web Speech on iOS. Keep saved
+// preferences, but do not activate it until coexistence is device-validated.
+const BACKGROUND_TTS_AVAILABLE = false;
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 4;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -429,7 +432,7 @@ class SpeechQueue {
     this.resumePara = startPara;
     this.state = 'playing';
     renderTtsState();
-    this.sessionBackground = Boolean(state.backgroundTts);
+    this.sessionBackground = BACKGROUND_TTS_AVAILABLE && Boolean(state.backgroundTts);
     if (this.sessionBackground && !this.background.start(state.ttsVolume, () => {
       this.pause();
       this.notice = '背景音訊未啟動或已中斷，請關閉實驗或再次點播放';
@@ -967,13 +970,13 @@ function bindPanelEvents() {
   if (voiceGroup && !$('#backgroundTts')) {
     const group = document.createElement('div');
     group.className = 'sg';
-    group.innerHTML = `<label class="sg-lbl"><input id="backgroundTts" type="checkbox" ${state.backgroundTts ? 'checked' : ''}> 背景聽書（實驗）</label><div class="sg-hint">預設關閉。開啟後嘗試以靜音音軌與鎖屏控制繼續朗讀；iOS 可能暫停、凍結或中斷，無法保證背景播放或準時定時停止。切換會暫停，請重新點播放。</div>`;
+    group.innerHTML = `<label class="sg-lbl"><input id="backgroundTts" type="checkbox" ${BACKGROUND_TTS_AVAILABLE && state.backgroundTts ? 'checked' : ''} ${BACKGROUND_TTS_AVAILABLE ? '' : 'disabled'}> 背景聽書（實驗，暫停提供）</label><div class="sg-hint">靜音音軌可能中斷朗讀，已停用實驗。現在僅支援前景播放，無法保證背景播放；切換 App 或鎖屏後，回來請點播放繼續。原有書籍與設定保留。</div>`;
     voiceGroup.insertAdjacentElement('beforebegin', group);
     $('#backgroundTts').addEventListener('change', e => {
       const enabled = e.target.checked;
-      tts.pause();
-      tts.background.clear();
-      tts.sessionBackground = false;
+      // This unavailable preference must not cancel active or freshly queued
+      // speech. In particular, never issue native cancel while already paused.
+      if (!BACKGROUND_TTS_AVAILABLE) return;
       state.backgroundTts = enabled;
       localStorage.setItem('backgroundTts', String(enabled));
       renderTtsState();
