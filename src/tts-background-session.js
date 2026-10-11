@@ -1,4 +1,10 @@
-// Optional companion media, not a guarantee of iOS background execution.
+// Optional companion keepalive: a looping silent track that keeps iOS treating
+// the page as "playing" while in background. Best-effort only; it grants no
+// guarantee of background execution.
+//
+// Fully decoupled from the TTS controller by design: interruption or failure
+// of the keepalive must NEVER pause or cancel speech. A keepalive failure only
+// releases the keepalive itself; foreground TTS continues without it.
 export function silentWav() {
   const samples = 8000;
   const buffer = new ArrayBuffer(44 + samples);
@@ -35,7 +41,7 @@ export class TtsBackgroundSession {
     return !this.otherMediaActive() && (!session || this.ownsMedia()
       || (session.metadata == null && (!session.playbackState || session.playbackState === 'none')));
   }
-  start(volume, onFailure) {
+  start(volume) {
     if (this.audio) return true;
     if (!this.canStart()) return false;
     try {
@@ -45,17 +51,41 @@ export class TtsBackgroundSession {
       audio.loop = true;
       audio.volume = volume;
       audio.setAttribute('playsinline', '');
-      const failed = () => {
+      // Any keepalive failure only releases the keepalive. It must never
+      // pause or cancel speech: foreground TTS continues without it.
+      const release = () => {
         if (this.audio !== audio) return; // A rejection from a previous Play is stale.
         this.stopAudio();
-        onFailure();
+        // Notify only (never pause/cancel): the controller downgrades to
+        // foreground-only TTS. PR #6's race was a failure callback that
+        // paused the controller; this one must not.
+        const lost = this.controller?.onKeepaliveLost;
+        if (typeof lost === 'function') { try { lost.call(this.controller); } catch (_) {} }
       };
-      audio.onerror = failed;
-      // System interruption is an explicit pause, never an automatic replay.
-      audio.onpause = () => { if (this.audio === audio) this.controller.pause(); };
-      audio.onended = failed;
-      const pending = audio.play(); // Must be called synchronously inside explicit Play.
-      pending?.catch(failed);
+      audio.onerror = release;
+      audio.onended = release;
+      // System interruption (call, Siri, notification) only restarts the
+      // sacrificial keepalive, best-effort. It never touches the TTS
+      // controller: the keepalive's interruption has no side effects.
+      audio.onpause = () => {
+        if (this.audio !== audio) return; // stale
+        const later = this.env.setTimeout;
+        if (typeof later !== 'function') return;
+        later(() => {
+          if (this.audio !== audio) return;
+          if (!this.controller || this.controller.state !== 'playing') return;
+          try {
+            const pending = audio.play();
+            if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+          } catch (_) { /* best-effort; no user gesture while backgrounded */ }
+        }, 1500);
+      };
+      // Must be called synchronously inside explicit Play: a handler that
+      // awaits before play() has already lost the user-gesture context.
+      const pending = audio.play();
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch(release);
+      }
       return true;
     } catch (_) {
       this.stopAudio();

@@ -16,10 +16,12 @@ import {
   setActiveReadingPreset,
 } from './reading-presets.js';
 
-const APP_VERSION = '0.7.4-foreground-tts-hotfix';
-// The silent media experiment can interrupt Web Speech on iOS. Keep saved
-// preferences, but do not activate it until coexistence is device-validated.
-const BACKGROUND_TTS_AVAILABLE = false;
+const APP_VERSION = '0.7.5-background-tts';
+// Background TTS experiment (v2): silent keepalive + Media Session, fully
+// decoupled from the speech controller. A keepalive failure only degrades to
+// foreground TTS and must never pause/cancel speech. Still needs iPhone
+// device validation; see docs/background-tts-experiment.md.
+const BACKGROUND_TTS_AVAILABLE = true;
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 4;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -433,15 +435,18 @@ class SpeechQueue {
     this.state = 'playing';
     renderTtsState();
     this.sessionBackground = BACKGROUND_TTS_AVAILABLE && Boolean(state.backgroundTts);
-    if (this.sessionBackground && !this.background.start(state.ttsVolume, () => {
-      this.pause();
-      this.notice = '背景音訊未啟動或已中斷，請關閉實驗或再次點播放';
-      renderTtsState();
-    })) {
-      this.pause();
-      this.notice = '背景音訊無法啟動，或其他媒體正在使用；請關閉實驗再播放';
-      renderTtsState();
-      return;
+    if (this.sessionBackground) {
+      // Start the keepalive synchronously inside the user gesture. If it
+      // cannot start, degrade gracefully: speech continues, only the
+      // background keepalive is off. A keepalive failure must never cancel
+      // queued speech (WebKit #191745: async cancel can clear a fresh queue).
+      const blocked = this.background.otherMediaActive();
+      let keepalive = false;
+      try { keepalive = this.background.start(state.ttsVolume); } catch (_) { keepalive = false; }
+      if (!keepalive) {
+        this.sessionBackground = false;
+        this.notice = blocked ? '其他媒體正在播放，僅前景朗讀' : '背景保活未啟動，僅前景播放；鎖屏或切換 App 會暫停';
+      }
     }
     this.speakNext(generation); // Keep first speak inside the user activation.
 
@@ -529,6 +534,16 @@ class SpeechQueue {
     wakeLock.release().catch(() => {});
     renderTtsState();
     saveProgressFromPage();
+  }
+  // Notification-only: the keepalive died asynchronously (e.g. iOS refused
+  // the play request). Downgrade to foreground-only TTS. This must never
+  // pause or cancel speech — a failure callback that pauses the controller
+  // was the PR #6 race.
+  onKeepaliveLost() {
+    if (!this.sessionBackground) return;
+    this.sessionBackground = false;
+    this.notice = '背景保活中斷，僅前景播放；鎖屏或切換 App 會暫停';
+    renderTtsState();
   }
   stop(preservePosition = false) {
     if (preservePosition && this.activeSegment && !this.diagnostic) this.checkpoint(this.activeSegment);
@@ -970,7 +985,7 @@ function bindPanelEvents() {
   if (voiceGroup && !$('#backgroundTts')) {
     const group = document.createElement('div');
     group.className = 'sg';
-    group.innerHTML = `<label class="sg-lbl"><input id="backgroundTts" type="checkbox" ${BACKGROUND_TTS_AVAILABLE && state.backgroundTts ? 'checked' : ''} ${BACKGROUND_TTS_AVAILABLE ? '' : 'disabled'}> 背景聽書（實驗，暫停提供）</label><div class="sg-hint">靜音音軌可能中斷朗讀，已停用實驗。現在僅支援前景播放，無法保證背景播放；切換 App 或鎖屏後，回來請點播放繼續。原有書籍與設定保留。</div>`;
+    group.innerHTML = `<label class="sg-lbl"><input id="backgroundTts" type="checkbox" ${BACKGROUND_TTS_AVAILABLE && state.backgroundTts ? 'checked' : ''} ${BACKGROUND_TTS_AVAILABLE ? '' : 'disabled'}> 背景聽書（實驗）</label><div class="sg-hint">開啟後，播放時以靜音音軌保持背景朗讀，並在鎖屏顯示書名與控制。iOS 仍可能中斷背景語音，此為盡力而為；若異常請關閉此選項。未開啟時，鎖屏或切換 App 會暫停，回來點播放繼續。</div>`;
     voiceGroup.insertAdjacentElement('beforebegin', group);
     $('#backgroundTts').addEventListener('change', e => {
       const enabled = e.target.checked;
