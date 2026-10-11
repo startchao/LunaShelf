@@ -6,7 +6,10 @@ import { TtsPlaybackGeneration } from '../src/tts-playback-generation.js';
 import { TtsBackgroundSession, silentWav } from '../src/tts-background-session.js';
 
 const source = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-function setup({ enabled = false, rejectPlay = false, throwPlay = false, media = true, unsupported = [], otherMedia = [] } = {}) {
+// Legacy experiment tests exercise the dormant branch deliberately. Hotfix
+// tests below use the actual production gate, not this legacy override.
+const productionAvailable = source.match(/const BACKGROUND_TTS_AVAILABLE = (true|false);/)[1] === 'true';
+function setup({ enabled = false, available = true, rejectPlay = false, throwPlay = false, media = true, unsupported = [], otherMedia = [] } = {}) {
   const events = [], spoken = [], audios = [], revoked = [], timers = new Map(), saved = new Map();
   const actions = new Map(), handlers = new Map();
   let timerId = 0;
@@ -36,7 +39,7 @@ function setup({ enabled = false, rejectPlay = false, throwPlay = false, media =
   const state = { backgroundTts: enabled, ttsVolume: 0.6, currentPage: 0, sleepUntil: 0, sleepTimer: null,
     pages: [{ startPara: 0 }], currentBook: { id: 'one', title: 'Test book', paragraphs: ['甲'.repeat(600), 'Chapter 2', 'English passage.'],
       chapters: [{ title: 'Chapter 1', idx: 0 }, { title: 'Chapter 2', idx: 1 }], progressPara: 0 } };
-  const context = vm.createContext({ state, TtsPlaybackGeneration, console, document,
+  const context = vm.createContext({ state, TtsPlaybackGeneration, BACKGROUND_TTS_AVAILABLE: available, console, document,
     TtsBackgroundSession: class extends TtsBackgroundSession { constructor(controller) { super(controller, env); } },
     window: { addEventListener: (name, fn) => handlers.set(name, fn) },
     localStorage: { getItem: k => saved.get(k) ?? null, setItem: (k, v) => saved.set(k, v), removeItem: k => saved.delete(k) },
@@ -55,7 +58,16 @@ function setup({ enabled = false, rejectPlay = false, throwPlay = false, media =
   q.isSupported = () => true;
   const hide = () => { document.visibilityState = 'hidden'; handlers.get('visibilitychange')(); };
   const show = () => { document.visibilityState = 'visible'; handlers.get('visibilitychange')(); handlers.get('pageshow')(); };
-  return { q, events, spoken, audios, revoked, timers, saved, state, mediaSession, actions, handlers, hide, show, env };
+  const panelListeners = new Map(); let panelHtml = '', inserted = false;
+  const voice = { closest: () => ({ insertAdjacentElement: (_, group) => { panelHtml = group.innerHTML; inserted = true; } }), addEventListener() {} };
+  context.$ = selector => selector === '#speechVoice' ? voice : selector === '#speechEnglishVoice' ? { addEventListener() {} }
+    : selector === '#backgroundTts' && inserted ? { addEventListener: (event, fn) => panelListeners.set(event, fn) } : null;
+  context.$$ = () => [];
+  context.closePanel = () => {};
+  document.createElement = () => ({});
+  vm.runInContext(source.slice(source.indexOf('function bindPanelEvents()'), source.indexOf('function bindEvents()')) + '\nbindPanelEvents();', context);
+  const change = value => panelListeners.get('change')({ target: { checked: value } });
+  return { q, events, spoken, audios, revoked, timers, saved, state, mediaSession, actions, handlers, hide, show, env, change, panelHtml };
 }
 
 test('WAV header and unsigned PCM payload are genuine one-second silence', async () => {
@@ -206,17 +218,17 @@ test('diagnostic playback never activates background experiment and suspends whe
   h.hide(); assert.equal(h.q.state, 'paused'); h.show(); assert.equal(h.spoken.length, 2);
 });
 
-test('persisted switch is strict opt-in and version/cache markers stay consistent', () => {
+test('saved preference and disabled warning are retained; version/cache markers stay consistent', () => {
   assert.match(source, /backgroundTts: localStorage\.getItem\('backgroundTts'\) === 'true'/);
   assert.match(source, /localStorage\.setItem\('backgroundTts', String\(enabled\)\)/);
-  assert.match(source, /背景聽書（實驗）/);
+  assert.match(source, /背景聽書（實驗，暫停提供）/);
   assert.match(source, /無法保證背景播放/);
   const version = source.match(/const APP_VERSION = '([^']+)'/)[1];
   assert.ok(readFileSync(new URL('../index.html', import.meta.url), 'utf8').includes(`?v=${version}`));
   assert.ok(readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8').includes(`?v=${version}`));
 });
 
-test('switch handler persists both values, pauses once and renders stored opt-in on reload', () => {
+test('disabled switch retains stored preference without pausing or native cancel', () => {
   const storage = new Map();
   const binder = source.slice(source.indexOf('function bindPanelEvents()'), source.indexOf('function bindEvents()'));
   function panel() {
@@ -225,7 +237,7 @@ test('switch handler persists both values, pauses once and renders stored opt-in
     const checkbox = { addEventListener: (event, fn) => listeners.set(event, fn) };
     const voiceGroup = { insertAdjacentElement: (_, group) => { html = group.innerHTML; inserted = true; } };
     const voice = { closest: () => voiceGroup, addEventListener() {} };
-    const context = vm.createContext({ state,
+    const context = vm.createContext({ state, BACKGROUND_TTS_AVAILABLE: productionAvailable,
       $: selector => selector === '#speechVoice' ? voice : selector === '#speechEnglishVoice' ? { addEventListener() {} }
         : selector === '#backgroundTts' && inserted ? checkbox : null,
       $$: () => [], closePanel() {}, renderTtsState() {},
@@ -237,10 +249,12 @@ test('switch handler persists both values, pauses once and renders stored opt-in
     return { html, state, calls, change: value => listeners.get('change')({ target: { checked: value } }) };
   }
   const first = panel(); assert.doesNotMatch(first.html, /type="checkbox" checked/);
-  first.change(true); assert.equal(storage.get('backgroundTts'), 'true'); assert.equal(first.state.backgroundTts, true);
-  assert.deepEqual(first.calls, ['pause', 'clear']);
-  const reload = panel(); assert.match(reload.html, /type="checkbox" checked/);
-  reload.change(false); assert.equal(storage.get('backgroundTts'), 'false');
+  assert.match(first.html, /disabled/);
+  first.change(true); assert.equal(storage.has('backgroundTts'), false); assert.equal(first.state.backgroundTts, false);
+  assert.deepEqual(first.calls, []);
+  storage.set('backgroundTts', 'true');
+  const reload = panel(); assert.doesNotMatch(reload.html, /type="checkbox" checked/);
+  reload.change(false); assert.equal(storage.get('backgroundTts'), 'true');
   assert.doesNotMatch(panel().html, /type="checkbox" checked/);
 });
 
@@ -259,4 +273,72 @@ test('wake lock acquired after hide/pause is immediately released', async () => 
   vm.runInContext(source.slice(source.indexOf('class WakeLockManager {'), source.indexOf('const wakeLock = new WakeLockManager();')) + '\nglobalThis.lock = new WakeLockManager();', context);
   const pending = context.lock.request(); document.visibilityState = 'hidden'; await context.lock.release();
   finish(sentinel); await pending; assert.equal(releases, 1); assert.equal(context.lock.sentinel, null);
+});
+
+test('production hard-disables companion media even for a stored ON preference', () => {
+  assert.equal(productionAvailable, false);
+  for (const enabled of [false, true]) {
+    const h = setup({ enabled, available: productionAvailable, rejectPlay: true, throwPlay: true });
+    h.q.play();
+    assert.equal(h.spoken.length, 1, 'first speak must occur before Play returns');
+    assert.equal(h.events[0], 'speech.speak');
+    assert.equal(h.events.includes('speech.cancel'), false);
+    assert.equal(h.audios.length, 0); assert.equal(h.actions.size, 0);
+    assert.equal(h.q.sessionBackground, false);
+    h.hide(); assert.equal(h.q.state, 'paused');
+    h.show(); assert.equal(h.spoken.length, 1);
+  }
+});
+
+test('OFF->ON->Play and ON->OFF->Play never cancel native speech on switch or Play', () => {
+  for (const enabled of [false, true]) {
+    const h = setup({ enabled, available: productionAvailable });
+    h.change(!enabled); h.q.play();
+    assert.equal(h.events.includes('speech.cancel'), false);
+    assert.equal(h.spoken.length, 1); assert.equal(h.audios.length, 0);
+    assert.equal(h.state.backgroundTts, enabled, 'disabled UI cannot change saved preference');
+  }
+});
+
+test('toggle while playing or paused cannot interrupt, enqueue, change voice generation or recancel', () => {
+  const h = setup({ enabled: true, available: productionAvailable }); h.q.play();
+  const generation = h.q.playback.value, utterance = h.q.currentUtterance;
+  h.change(false); h.change(true);
+  assert.equal(h.q.state, 'playing'); assert.equal(h.q.playback.value, generation);
+  assert.equal(h.q.currentUtterance, utterance); assert.equal(h.spoken.length, 1);
+  h.q.pause(); const cancellations = h.events.filter(e => e === 'speech.cancel').length;
+  h.change(false); h.change(true); h.q.play();
+  assert.equal(h.events.filter(e => e === 'speech.cancel').length, cancellations);
+  assert.equal(h.spoken.length, 2); assert.equal(h.audios.length, 0);
+});
+
+test('production Play never calls audio rejection/onpause path, including fresh generations', async () => {
+  const h = setup({ enabled: true, available: productionAvailable, rejectPlay: true });
+  h.q.background.start = () => { throw new Error('companion must remain unreachable'); };
+  h.q.play(); const staleEnd = h.spoken[0].onend;
+  h.q.pause(); h.change(false); h.q.play(); const fresh = h.q.currentUtterance;
+  staleEnd(); await Promise.resolve();
+  assert.equal(h.q.currentUtterance, fresh); assert.equal(h.q.state, 'playing');
+  assert.equal(h.spoken.length, 2); assert.equal(h.audios.length, 0);
+  assert.equal(h.events.filter(e => e === 'speech.cancel').length, 1);
+});
+
+test('production stored ON still respects sleep expiry and watchdog without media retries', () => {
+  const h = setup({ enabled: true, available: productionAvailable }); h.q.play();
+  h.state.sleepUntil = Date.now() - 1; h.spoken[0].onend();
+  assert.equal(h.q.state, 'paused'); assert.equal(h.spoken.length, 1);
+  const w = setup({ enabled: true, available: productionAvailable }); w.q.play();
+  [...w.timers.values()][0](); w.show();
+  assert.equal(w.q.state, 'idle'); assert.equal(w.spoken.length, 1); assert.equal(w.audios.length, 0);
+});
+
+test('dormant experiment stale audio.onpause cannot cancel a new generation', () => {
+  const h = setup({ enabled: true, available: true }); h.q.play();
+  const stalePause = h.audios[0].onpause;
+  h.q.pause(); h.q.play(); const fresh = h.q.currentUtterance;
+  const generation = h.q.playback.value;
+  stalePause();
+  assert.equal(h.q.state, 'playing'); assert.equal(h.q.currentUtterance, fresh);
+  assert.equal(h.q.playback.value, generation);
+  assert.equal(h.events.filter(e => e === 'speech.cancel').length, 1);
 });
