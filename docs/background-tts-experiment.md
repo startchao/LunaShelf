@@ -8,6 +8,8 @@ PR #6 的 `TtsBackgroundSession.start()` 在 audio.play 拒絕後呼叫失敗回
 
 因此此版不嘗試重試音軌或調整 iOS 音訊路由，而是停用有問題的路徑。保留休眠期限、語音 generation、每次 Play 固定中英聲線、分段 checkpoint、前景 Wake Lock。隱藏／鎖屏時暫停，回來必須明確 Play，不自動續播。沒有背景播放承諾。
 
+播放鈕與設定面板的 DOM 所有權也已追查：`readerTemplate()` 把 `#rfPlay` 放在工具列，`#panelRoot` 是其同層的獨立容器；`bindEvents()` 綁定工具列 click，依控制器狀態呼叫 Play／Pause。`openPanel()`、`closePanel()` 與 `renderPanel()` 僅替換 `#panelRoot.innerHTML` 並重綁面板事件，不替換或重綁工具列。`renderTtsState()` 按控制器狀態更新 ▶／⏸ 與提示。因此目前沒有原始碼證據指向「設定重繪把播放鈕事件弄丟」；已確認的中止路徑是舊切換事件與 companion audio 回呼進入 pause/native cancel。iOS 是否因音訊路由競爭或非同步取消而觸發使用者故障，仍需實機確認。
+
 書籍、字體、閱讀版面與原有偏好不刪除。實驗 helper 與舊測試保留為診斷資料，不能把舊模擬測試通過解讀成目前提供背景功能，也不能只翻轉 gate 重新提供實驗：必須先修復競態並通過實機驗證。
 
 ## 目前實機檢查（尚未執行）
@@ -21,6 +23,8 @@ PR #6 的 `TtsBackgroundSession.start()` 在 audio.play 拒絕後呼叫失敗回
 5. 定時 10/30/50/60 分鐘、換書與返回書庫仍正常。核對既有 TXT/MD、字體與閱讀設定不變。
 
 自動化驗證涵蓋停用 gate、保存 ON/OFF、兩個方向的切換事件後 Play、播放／暫停中切換、同步首段 speak、沒有 audio.play／拒絕／onpause 入口、stale generation、休眠期限與無重試 watchdog。舊實驗測試故意以測試專用 gate 啟用 dormant branch，涵蓋原音軌拒絕、onpause、過期回呼與清理；不是生產設定或 iPhone 驗證。
+
+播放鈕回歸測試使用 Node VM 與最小 DOM 替身，執行正式 `bindEvents()`、`renderTtsState()`、`panelTemplate()`、`renderPanel()`、`bindPanelEvents()` 與開關面板函式；透過 `#rfPlay` click 而非直接呼叫控制器，核對按鈕／提示／控制器一致、click 返回前已 speak、暫停只 cancel 一次、設定關閉／重開／重繪不遺失或重複 toolbar handler。停用選項的 change 是刻意注入的合成事件，不代表使用者能操作停用 checkbox。DOM 替身不驗證瀏覽器原生事件、可信任 user activation 或 iPhone 音訊行為；它只驗證正式 JS click 路徑保持同步。
 
 此 hotfix 僅交 PR 審查；不由實作者合併或部署。版本回退可 revert hotfix 並重新部署，但會重新暴露 PR #6 的實驗競態，不建議作為播放故障的解法。
 

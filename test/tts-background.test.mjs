@@ -9,7 +9,7 @@ const source = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 // Legacy experiment tests exercise the dormant branch deliberately. Hotfix
 // tests below use the actual production gate, not this legacy override.
 const productionAvailable = source.match(/const BACKGROUND_TTS_AVAILABLE = (true|false);/)[1] === 'true';
-function setup({ enabled = false, available = true, rejectPlay = false, throwPlay = false, media = true, unsupported = [], otherMedia = [] } = {}) {
+function setup({ enabled = false, available = true, rejectPlay = false, throwPlay = false, media = true, unsupported = [], otherMedia = [], ui = false } = {}) {
   const events = [], spoken = [], audios = [], revoked = [], timers = new Map(), saved = new Map();
   const actions = new Map(), handlers = new Map();
   let timerId = 0;
@@ -66,8 +66,66 @@ function setup({ enabled = false, available = true, rejectPlay = false, throwPla
   context.closePanel = () => {};
   document.createElement = () => ({});
   vm.runInContext(source.slice(source.indexOf('function bindPanelEvents()'), source.indexOf('function bindEvents()')) + '\nbindPanelEvents();', context);
-  const change = value => panelListeners.get('change')({ target: { checked: value } });
-  return { q, events, spoken, audios, revoked, timers, saved, state, mediaSession, actions, handlers, hide, show, env, change, panelHtml };
+  let change = value => panelListeners.get('change')({ target: { checked: value } });
+  let nodes, click;
+  if (ui) {
+    // Minimal DOM fixture, not browser/iPhone QA. Execute the real production
+    // template, panel replacement, toolbar binder and state renderer below.
+    const panelNodes = new Map(); nodes = new Map();
+    const element = () => {
+      const listeners = new Map();
+      return { textContent: '', classList: { toggle() {} }, setAttribute() {},
+        insertAdjacentElement(_, node) { if (node.id) panelNodes.set(`#${node.id}`, node); },
+        addEventListener(event, fn) {
+          if (!listeners.has(event)) listeners.set(event, new Set());
+          listeners.get(event).add(fn);
+        },
+        dispatch(event, values = {}) {
+          for (const fn of listeners.get(event) || []) fn({ target: this, ...values });
+        },
+        listenerCount: event => listeners.get(event)?.size || 0,
+      };
+    };
+    document.createElement = element;
+    for (const id of ['rfPlay', 'ttsStatus', 'setBtn', 'bottomSetBtn']) nodes.set(`#${id}`, element());
+    const root = element(); nodes.set('#panelRoot', root);
+    Object.defineProperty(root, 'innerHTML', { set(html) {
+      panelNodes.clear();
+      for (const match of html.matchAll(/id="([^"]+)"/g)) panelNodes.set(`#${match[1]}`, element());
+      const voiceGroup = { insertAdjacentElement(_, group) {
+        panelHtml = group.innerHTML;
+        const checkbox = element();
+        checkbox.disabled = /disabled/.test(panelHtml);
+        checkbox.checked = /type="checkbox" checked/.test(panelHtml);
+        panelNodes.set('#backgroundTts', checkbox);
+      } };
+      const voice = panelNodes.get('#speechVoice');
+      if (voice) voice.closest = () => voiceGroup;
+    } });
+    Object.assign(state, { panel: null, fonts: [], lineHeight: 1.3, paragraphSpacing: 0.5 });
+    Object.assign(context, { $: selector => nodes.get(selector) || panelNodes.get(selector) || null,
+      esc: value => String(value), clampTtsVolume: value => value,
+      ttsVoiceOptions: () => '<option value="">Automatic</option>',
+    });
+    const uiSource = [
+      source.match(/const TTS_RATE_MIN = [^;]+;/)[0],
+      source.match(/const TTS_RATE_MAX = [^;]+;/)[0],
+      source.slice(source.indexOf('function openPanel('), source.indexOf('function jumpChapter(')),
+      source.slice(source.indexOf('function renderTtsState()'), source.indexOf('function setSleepTimer(')),
+      source.slice(source.indexOf('function panelTemplate()'), source.indexOf('async function openBook(')),
+      source.slice(source.indexOf('function bindEvents()'), source.indexOf('async function render()')),
+    ].join('\n');
+    vm.runInContext(`${uiSource}\nbindEvents(); renderTtsState();`, context);
+    click = selector => (nodes.get(selector) || panelNodes.get(selector)).dispatch('click');
+    change = value => {
+      const checkbox = panelNodes.get('#backgroundTts');
+      assert.equal(checkbox.disabled, true);
+      // A user cannot operate the disabled switch; deliberately inject a stale
+      // synthetic change to verify containment, without re-enabling the gate.
+      checkbox.checked = value; checkbox.dispatch('change');
+    };
+  }
+  return { q, events, spoken, audios, revoked, timers, saved, state, mediaSession, actions, handlers, hide, show, env, change, panelHtml, nodes, click, context };
 }
 
 test('WAV header and unsigned PCM payload are genuine one-second silence', async () => {
@@ -290,10 +348,19 @@ test('production hard-disables companion media even for a stored ON preference',
   }
 });
 
+function assertToolbar(h, expected) {
+  assert.equal(h.q.state, expected);
+  assert.equal(h.nodes.get('#rfPlay').textContent, expected === 'playing' ? '⏸' : '▶');
+  assert.equal(h.nodes.get('#ttsStatus').textContent,
+    expected === 'playing' ? '朗讀中' : expected === 'paused' ? '已暫停，點播放繼續' : '');
+}
+
 test('OFF->ON->Play and ON->OFF->Play never cancel native speech on switch or Play', () => {
   for (const enabled of [false, true]) {
-    const h = setup({ enabled, available: productionAvailable });
-    h.change(!enabled); h.q.play();
+    const h = setup({ enabled, available: productionAvailable, ui: true });
+    assertToolbar(h, 'idle');
+    h.click('#setBtn'); h.change(!enabled); h.click('#panelX'); h.click('#rfPlay');
+    assertToolbar(h, 'playing');
     assert.equal(h.events.includes('speech.cancel'), false);
     assert.equal(h.spoken.length, 1); assert.equal(h.audios.length, 0);
     assert.equal(h.state.backgroundTts, enabled, 'disabled UI cannot change saved preference');
@@ -301,23 +368,49 @@ test('OFF->ON->Play and ON->OFF->Play never cancel native speech on switch or Pl
 });
 
 test('toggle while playing or paused cannot interrupt, enqueue, change voice generation or recancel', () => {
-  const h = setup({ enabled: true, available: productionAvailable }); h.q.play();
+  const h = setup({ enabled: true, available: productionAvailable, ui: true }); h.click('#rfPlay');
+  h.click('#bottomSetBtn');
   const generation = h.q.playback.value, utterance = h.q.currentUtterance;
   h.change(false); h.change(true);
   assert.equal(h.q.state, 'playing'); assert.equal(h.q.playback.value, generation);
   assert.equal(h.q.currentUtterance, utterance); assert.equal(h.spoken.length, 1);
-  h.q.pause(); const cancellations = h.events.filter(e => e === 'speech.cancel').length;
-  h.change(false); h.change(true); h.q.play();
+  assertToolbar(h, 'playing');
+  h.click('#rfPlay'); assertToolbar(h, 'paused');
+  const cancellations = h.events.filter(e => e === 'speech.cancel').length;
+  h.change(false); h.change(true); assertToolbar(h, 'paused'); h.click('#rfPlay');
+  assertToolbar(h, 'playing');
   assert.equal(h.events.filter(e => e === 'speech.cancel').length, cancellations);
   assert.equal(h.spoken.length, 2); assert.equal(h.audios.length, 0);
 });
 
+test('settings close/reopen and actual panel rerender keep exactly one toolbar click handler', () => {
+  const h = setup({ enabled: true, available: productionAvailable, ui: true });
+  const playButton = h.nodes.get('#rfPlay');
+  for (let i = 0; i < 3; i++) {
+    h.click('#setBtn'); h.change(false);
+    vm.runInContext('renderPanel();', h.context); h.change(true);
+    h.click('#panelClose'); h.click('#bottomSetBtn'); h.click('#panelX');
+    assert.equal(h.nodes.get('#rfPlay'), playButton);
+    assert.equal(playButton.listenerCount('click'), 1);
+    assertToolbar(h, i ? 'paused' : 'idle');
+    const before = h.spoken.length, cancellations = h.events.filter(e => e === 'speech.cancel').length;
+    h.click('#rfPlay'); assertToolbar(h, 'playing');
+    assert.equal(h.spoken.length, before + 1, 'one speak synchronously before click returns');
+    assert.equal(h.events.filter(e => e === 'speech.cancel').length, cancellations);
+    h.click('#rfPlay'); assertToolbar(h, 'paused');
+    assert.equal(h.spoken.length, before + 1);
+    assert.equal(h.events.filter(e => e === 'speech.cancel').length, cancellations + 1);
+  }
+  assert.equal(h.audios.length, 0); assert.equal(h.actions.size, 0);
+});
+
 test('production Play never calls audio rejection/onpause path, including fresh generations', async () => {
-  const h = setup({ enabled: true, available: productionAvailable, rejectPlay: true });
+  const h = setup({ enabled: true, available: productionAvailable, rejectPlay: true, ui: true });
   h.q.background.start = () => { throw new Error('companion must remain unreachable'); };
-  h.q.play(); const staleEnd = h.spoken[0].onend;
-  h.q.pause(); h.change(false); h.q.play(); const fresh = h.q.currentUtterance;
+  h.click('#rfPlay'); const staleEnd = h.spoken[0].onend;
+  h.click('#rfPlay'); h.click('#setBtn'); h.change(false); h.click('#rfPlay'); const fresh = h.q.currentUtterance;
   staleEnd(); await Promise.resolve();
+  assertToolbar(h, 'playing');
   assert.equal(h.q.currentUtterance, fresh); assert.equal(h.q.state, 'playing');
   assert.equal(h.spoken.length, 2); assert.equal(h.audios.length, 0);
   assert.equal(h.events.filter(e => e === 'speech.cancel').length, 1);
