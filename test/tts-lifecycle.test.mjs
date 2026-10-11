@@ -34,7 +34,7 @@ test('main TTS lifecycle has no automatic foreground resume or retry path', asyn
   const playMethod = source.slice(source.indexOf('  play() {'), source.indexOf('  armStartWatchdog(', source.indexOf('  play() {')));
   const watchdogMethod = source.slice(source.indexOf('  armStartWatchdog('), source.indexOf('  speakNext(', source.indexOf('  armStartWatchdog(')));
 
-  assert.match(visibilityHandler, /visibilityState === 'hidden'\) tts\.suspendForBackground\(\)/);
+  assert.match(visibilityHandler, /visibilityState === 'hidden'\) tts\.handleHidden\(\)/);
   assert.doesNotMatch(visibilityHandler, /tts\.play\(/);
   assert.doesNotMatch(source, /autoResumeWanted|resumeAfterInterruption|retryActiveSegment|speechSynthesis\.resume/);
   assert.ok(playMethod.indexOf('invalidateSpeechState()') < playMethod.indexOf('speakNext(generation)'), 'Play must invalidate stale app state before creating the new utterance');

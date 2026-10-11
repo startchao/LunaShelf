@@ -1,5 +1,6 @@
 import './style.css';
 import { TtsPlaybackGeneration } from './tts-playback-generation.js';
+import { TtsBackgroundSession } from './tts-background-session.js';
 import {
   createBookBlockElement,
   isMarkdownFileName,
@@ -15,7 +16,7 @@ import {
   setActiveReadingPreset,
 } from './reading-presets.js';
 
-const APP_VERSION = '0.7.2-english-tts';
+const APP_VERSION = '0.7.3-background-tts-experiment';
 const TTS_RATE_MIN = 0.5;
 const TTS_RATE_MAX = 4;
 const TTS_RATE_PRESET_VERSION = 'v0.4.12';
@@ -58,6 +59,7 @@ const state = {
   marginPreset: initialReadingLayout.marginPreset,
   tableLayoutMode: normalizeTableLayoutMode(initialReadingLayout.tableLayoutMode),
   ttsVolume: Number(localStorage.getItem('ttsVolume') || 1),
+  backgroundTts: localStorage.getItem('backgroundTts') === 'true',
   wakeLockStatus: 'idle',
   libraryCategory: localStorage.getItem('libraryCategory') || 'all',
   view: 'library',
@@ -185,14 +187,20 @@ class TxtParser {
 }
 
 class WakeLockManager {
-  constructor() { this.sentinel = null; }
+  constructor() { this.sentinel = null; this.generation = 0; }
   isSupported() { return 'wakeLock' in navigator && typeof navigator.wakeLock?.request === 'function'; }
   async request() {
+    const generation = this.generation;
     if (!this.isSupported()) { state.wakeLockStatus = 'unsupported'; renderTtsState(); return false; }
     if (document.visibilityState !== 'visible') { state.wakeLockStatus = 'background'; renderTtsState(); return false; }
     try {
       if (!this.sentinel || this.sentinel.released) {
-        this.sentinel = await navigator.wakeLock.request('screen');
+        const sentinel = await navigator.wakeLock.request('screen');
+        if (generation !== this.generation || document.visibilityState !== 'visible') {
+          await sentinel.release();
+          return false;
+        }
+        this.sentinel = sentinel;
         this.sentinel.addEventListener('release', () => {
           state.wakeLockStatus = 'released';
           renderTtsState();
@@ -212,6 +220,7 @@ class WakeLockManager {
     }
   }
   async release() {
+    this.generation += 1;
     try { if (this.sentinel && !this.sentinel.released) await this.sentinel.release(); } catch (_) { /* ignore */ }
     this.sentinel = null;
     state.wakeLockStatus = 'idle';
@@ -239,6 +248,8 @@ class SpeechQueue {
     this.diagnosticResults = [];
     this.startWatchdog = null;
     this.sessionVoices = { zh: null, en: null };
+    this.background = new TtsBackgroundSession(this);
+    this.sessionBackground = false;
   }
   isSupported() { return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window; }
   detectLanguage(text) {
@@ -306,6 +317,7 @@ class SpeechQueue {
         this.diagnosticResults = this.diagnosticResults.slice(0, 6);
         this.diagnostic = false;
         this.state = 'paused';
+        this.background.clear();
         this.notice = '試聽完成，可繼續聽書';
         renderPanel();
         renderTtsState();
@@ -363,6 +375,8 @@ class SpeechQueue {
       this.pause();
       return toast('已暫停，請再點一次測試語速');
     }
+    this.background.clear();
+    this.sessionBackground = false;
     const generation = this.invalidateSpeechState();
     this.sessionVoices = { zh: this.pickVoice('zh'), en: this.pickVoice('en') };
     this.diagnostic = true;
@@ -415,18 +429,33 @@ class SpeechQueue {
     this.resumePara = startPara;
     this.state = 'playing';
     renderTtsState();
+    this.sessionBackground = Boolean(state.backgroundTts);
+    if (this.sessionBackground && !this.background.start(state.ttsVolume, () => {
+      this.pause();
+      this.notice = '背景音訊未啟動或已中斷，請關閉實驗或再次點播放';
+      renderTtsState();
+    })) {
+      this.pause();
+      this.notice = '背景音訊無法啟動，或其他媒體正在使用；請關閉實驗再播放';
+      renderTtsState();
+      return;
+    }
     this.speakNext(generation); // Keep first speak inside the user activation.
 
-    wakeLock.request().catch(err => console.warn('wake lock request failed', err));
+    if (this.state === 'playing') wakeLock.request().catch(err => console.warn('wake lock request failed', err));
   }
   armStartWatchdog(utterance, generation) {
     clearTimeout(this.startWatchdog);
+    // Hidden-page timers/events are throttled; don't mistake this for a failed start.
+    if (this.sessionBackground && document.visibilityState === 'hidden') return;
     this.startWatchdog = setTimeout(() => {
       if (!this.playback.isCurrent(utterance, generation) || this.state !== 'playing') return;
       if (utterance.startedAt != null) return;
       if (this.activeSegment && !this.diagnostic) this.checkpoint(this.activeSegment);
       this.state = 'idle';
       this.cancelSpeechEngine();
+      this.background.clear();
+      this.sessionBackground = false;
       this.diagnostic = false;
       this.notice = '朗讀未啟動，請點播放重試；若仍無聲，請重新開啟閱讀器';
       this.activeSegment = null;
@@ -448,8 +477,26 @@ class SpeechQueue {
     const utterance = this.makeUtterance(seg.text, seg.paraIdx, generation);
     this.currentUtterance = utterance;
     if (!this.playback.set(utterance, generation)) return;
-    speechSynthesis.speak(utterance);
+    if (this.sessionBackground) this.background.update(book, seg.paraIdx, 'playing');
+    try { speechSynthesis.speak(utterance); }
+    catch (_) { this.pause(); return; }
     this.armStartWatchdog(utterance, generation);
+  }
+  handleHidden() {
+    wakeLock.release().catch(() => {});
+    if (checkSleepDeadline()) return;
+    if (this.state === 'playing' && this.sessionBackground && !this.diagnostic) {
+      if (this.activeSegment) this.checkpoint(this.activeSegment);
+      clearTimeout(this.startWatchdog);
+      this.startWatchdog = null;
+      saveProgressFromPage();
+      return; // Keep the current generation and native speech; best-effort only.
+    }
+    this.suspendForBackground();
+  }
+  handlePageHide(event) {
+    if (event.persisted) this.handleHidden(); // bfcache can freeze us; never auto-resume.
+    else this.stop(true); // Navigation/unload: release media and retain checkpoint.
   }
   suspendForBackground() {
     if (this.state !== 'playing') return;
@@ -458,6 +505,8 @@ class SpeechQueue {
     this.diagnostic = false;
     this.notice = '已保留聽書位置，回來後請點播放繼續';
     this.cancelSpeechEngine();
+    this.background.clear();
+    this.sessionBackground = false;
     this.activeSegment = null;
 
     wakeLock.release().catch(() => {});
@@ -470,6 +519,8 @@ class SpeechQueue {
     this.diagnostic = false;
     this.notice = '已暫停，點播放繼續';
     this.cancelSpeechEngine();
+    this.background.stopAudio();
+    if (this.sessionBackground) this.background.update(state.currentBook, this.resumePara || 0, 'paused');
     this.activeSegment = null;
 
     wakeLock.release().catch(() => {});
@@ -477,6 +528,7 @@ class SpeechQueue {
     saveProgressFromPage();
   }
   stop(preservePosition = false) {
+    if (preservePosition && this.activeSegment && !this.diagnostic) this.checkpoint(this.activeSegment);
     this.diagnostic = false;
     this.notice = "";
     if (!preservePosition && state.currentBook) {
@@ -485,6 +537,8 @@ class SpeechQueue {
     this.resumeSegment = 0;
     this.state = 'idle';
     this.cancelSpeechEngine();
+    this.background.clear();
+    this.sessionBackground = false;
     this.resumePara = null;
     this.activeSegment = null;
     this.segments = [];
@@ -528,6 +582,7 @@ function setTtsVolume(value, persist = true) {
   state.ttsVolume = clampTtsVolume(value);
   if (persist) localStorage.setItem('ttsVolume', String(state.ttsVolume));
   if (tts?.currentUtterance) tts.currentUtterance.volume = state.ttsVolume;
+  if (tts?.background.audio) tts.background.audio.volume = state.ttsVolume;
   const slider = $('#speechVolume');
   const label = $('#speechVolumeVal');
   if (slider) slider.value = String(state.ttsVolume);
@@ -908,6 +963,22 @@ async function openBook(id) {
 function bindPanelEvents() {
   $('#panelClose')?.addEventListener('click', closePanel);
   $('#panelX')?.addEventListener('click', closePanel);
+  const voiceGroup = $('#speechVoice')?.closest('.sg');
+  if (voiceGroup && !$('#backgroundTts')) {
+    const group = document.createElement('div');
+    group.className = 'sg';
+    group.innerHTML = `<label class="sg-lbl"><input id="backgroundTts" type="checkbox" ${state.backgroundTts ? 'checked' : ''}> 背景聽書（實驗）</label><div class="sg-hint">預設關閉。開啟後嘗試以靜音音軌與鎖屏控制繼續朗讀；iOS 可能暫停、凍結或中斷，無法保證背景播放或準時定時停止。切換會暫停，請重新點播放。</div>`;
+    voiceGroup.insertAdjacentElement('beforebegin', group);
+    $('#backgroundTts').addEventListener('change', e => {
+      const enabled = e.target.checked;
+      tts.pause();
+      tts.background.clear();
+      tts.sessionBackground = false;
+      state.backgroundTts = enabled;
+      localStorage.setItem('backgroundTts', String(enabled));
+      renderTtsState();
+    });
+  }
   const chineseVoiceSelect = $('#speechVoice');
   if (chineseVoiceSelect && !$('#speechEnglishVoice')) {
     chineseVoiceSelect.setAttribute('aria-label', '中文朗讀聲線');
@@ -1035,12 +1106,12 @@ async function boot() {
 }
 window.addEventListener('resize', () => { if (state.view === 'reader' && state.currentBook) repaginateKeepPosition(); });
 document.addEventListener('visibilitychange', () => {
-  // Background speech requires an explicit Play to resume; foregrounding
-  // only reconciles the sleep deadline and visible controls.
-  if (document.visibilityState === 'hidden') tts.suspendForBackground();
+  // Default suspends; the explicit experiment only checkpoints. Neither mode
+  // restarts speech or companion audio on return to the foreground.
+  if (document.visibilityState === 'hidden') tts.handleHidden();
   else { checkSleepDeadline(); renderTtsState(); }
 });
-window.addEventListener('pagehide', () => tts.suspendForBackground());
+window.addEventListener('pagehide', event => tts.handlePageHide(event));
 window.addEventListener('pageshow', () => { checkSleepDeadline(); renderTtsState(); });
 boot().catch(err => { console.error(err); toast(`啟動失敗：${err.message}`); });
 
