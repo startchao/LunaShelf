@@ -1,27 +1,5 @@
 # 前景朗讀修復 — 0.7.4
 
-> ## 0.7.5 背景聽書 v2（2026-10-11）
->
-> 按研究結論重做最小可行方案，修正 PR #6 的三個競態後重新啟用
-> （`BACKGROUND_TTS_AVAILABLE=true`，預設仍 opt-in）。
->
-> 核心原則：**靜音保活音軌與 TTS 控制器完全解耦**。保活的中斷或失敗
-> 絕不暫停／取消語音，只降級為前景播放。
->
-> - `audio.onpause` 不再呼叫 `controller.pause()`；改為 1.5 秒後 best-effort
->   重啟靜音音軌（消耗品思維，來自 InkTrace 實證）。
-> - `audio.play()` 被拒絕（同步 throw 或非同步 reject）→ 只釋放保活、
->   降級繼續朗讀；非同步失敗另經 `onKeepaliveLost()` 通知控制器翻轉
->   `sessionBackground` 並提示，不暫停不取消（通知專用回調，與 PR #6
->   的失敗→暫停正好相反）。
-> - 設定開關切換只存偏好，不中斷語音（0.7.4 已修，保留）。
-> - 不加心跳：研究證實 pause/resume 心跳是桌機 Chrome 長語音的
->   workaround，在手機上可能反把語音切斷；已有 `splitText` 分段＋
->   onend 鏈式播放即足夠。
-> - 版本 `0.7.5-background-tts`；測試 49/49 通過（含改寫後的行為測試）。
-> - 仍需 iPhone 實機驗證（Safari＋PWA）：鎖屏 30 分鐘、來電/Siri、
->   AirPods 斷線、定時跨鎖屏。Node 測試不能代替。
-
 背景聽書實驗已停用。`BACKGROUND_TTS_AVAILABLE=false` 同時控制播放入口與設定介面：即使本機仍保存 `backgroundTts=true`，也不會建立靜音 audio、呼叫 audio.play 或註冊實驗 Media Session 控制。選項顯示停用且不可切換；即使程式送入 change 事件，也不取消語音、不改寫原有設定。第一段 speak 仍同步在明確 Play 內執行。
 
 ## 程式碼診斷（不代表已在 iPhone 重現）

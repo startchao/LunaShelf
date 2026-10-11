@@ -22,8 +22,6 @@ function setup({ enabled = false, available = true, rejectPlay = false, throwPla
   const env = { document, navigator: media ? { mediaSession } : {},
     MediaMetadata: class { constructor(values) { Object.assign(this, values); } },
     URL: { createObjectURL: () => `blob:fake-${audios.length}`, revokeObjectURL: url => revoked.push(url) },
-    setTimeout: (fn, ms) => { timers.set(++timerId, fn); return timerId; },
-    clearTimeout: id => { timers.delete(id); },
     Audio: class {
       constructor(url) { this.src = url; this.paused = true; audios.push(this); }
       setAttribute() {}
@@ -121,9 +119,9 @@ function setup({ enabled = false, available = true, rejectPlay = false, throwPla
     click = selector => (nodes.get(selector) || panelNodes.get(selector)).dispatch('click');
     change = value => {
       const checkbox = panelNodes.get('#backgroundTts');
-      assert.equal(checkbox.disabled, false);
-      // The switch is an enabled opt-in: toggling only persists the
-      // preference and must never interrupt speech.
+      assert.equal(checkbox.disabled, true);
+      // A user cannot operate the disabled switch; deliberately inject a stale
+      // synthetic change to verify containment, without re-enabling the gate.
       checkbox.checked = value; checkbox.dispatch('change');
     };
   }
@@ -189,55 +187,36 @@ test('pause releases audio/URL; stale callbacks and stale rejection cannot affec
   assert.equal(h.revoked.length, 2);
 });
 
-test('audio play rejection degrades to foreground TTS without pausing or canceling speech', async () => {
+test('audio play rejection pauses, retains segment and releases the loop without retry', async () => {
   const h = setup({ enabled: true, rejectPlay: true }); h.q.play();
   assert.equal(h.spoken.length, 1); // The promise was not awaited before speak.
-  assert.equal(h.q.state, 'playing');
-  await Promise.resolve(); await Promise.resolve(); // Let the rejection handler run.
-  assert.equal(h.q.state, 'playing'); // A keepalive failure must never pause speech.
-  assert.equal(h.spoken.length, 1);
-  assert.equal(h.q.background.audio, null); // Keepalive released silently.
-  assert.equal(h.revoked.length, 1);
-  assert.equal(h.events.includes('speech.cancel'), false);
-  assert.equal(h.q.sessionBackground, false); // Downgraded via notification-only callback.
-  assert.match(h.q.notice, /背景保活中斷/);
-  h.q.pause(); // Explicit user pause still works after degradation.
-  assert.equal(h.q.state, 'paused');
+  await Promise.resolve();
+  assert.equal(h.q.state, 'paused'); assert.equal(h.revoked.length, 1);
+  assert.equal(h.q.background.audio, null); assert.match(h.q.notice, /背景音訊/);
+  h.show(); assert.equal(h.audios.length, 1); assert.equal(h.spoken.length, 1);
+  assert.equal(h.q.resumeSegment, 0);
 });
 
-test('late rejection from stopped audio is a silent no-op for newer generations', async () => {
+test('late rejection from stopped audio cannot pause a newer generation', async () => {
   const h = setup({ enabled: true, rejectPlay: true }); h.q.play(); h.q.pause();
   // Use a pending success for the fresh generation rather than another rejection.
   h.env.Audio.prototype.play = function () { return Promise.resolve(); };
   h.q.play(); const fresh = h.q.currentUtterance;
-  await Promise.resolve(); await Promise.resolve();
+  await Promise.resolve();
   assert.equal(h.q.state, 'playing'); assert.equal(h.q.currentUtterance, fresh);
-  // Exactly one native cancel: the explicit user pause. The stale rejection
-  // added none.
-  assert.equal(h.events.filter(e => e === 'speech.cancel').length, 1);
 });
 
-test('synchronous audio failure degrades to foreground TTS; speech error still pauses cleanly', () => {
+test('synchronous audio failure and speech error both clean up; no automatic retries', () => {
   const blocked = setup({ enabled: true, throwPlay: true }); blocked.q.play();
-  assert.equal(blocked.q.state, 'playing'); // Degraded, not paused.
-  assert.equal(blocked.spoken.length, 1); // Speech continues without the keepalive.
-  assert.equal(blocked.q.sessionBackground, false);
-  assert.equal(blocked.revoked.length, 1);
-  assert.match(blocked.q.notice, /背景保活未啟動/);
+  assert.equal(blocked.q.state, 'paused'); assert.equal(blocked.spoken.length, 0); assert.equal(blocked.revoked.length, 1);
   const h = setup({ enabled: true }); h.q.play(); h.spoken[0].onerror({ error: 'interrupted' });
   assert.equal(h.q.state, 'paused'); assert.equal(h.q.background.audio, null); assert.equal(h.revoked.length, 1);
   h.show(); assert.equal(h.spoken.length, 1);
 });
 
-test('native audio interruption never pauses TTS; the sacrificial keepalive restarts best-effort', () => {
+test('native audio interruption pauses via the same controller and never replays the loop', () => {
   const h = setup({ enabled: true }); h.q.play(); h.audios[0].onpause();
-  assert.equal(h.q.state, 'playing'); // The controller is untouched by keepalive interruption.
-  assert.equal(h.q.background.audio, h.audios[0]); // Keepalive retained, not released.
-  assert.equal(h.events.includes('speech.cancel'), false);
-  assert.equal(h.timers.size, 2); // Startup watchdog + best-effort keepalive restart.
-  [...h.timers.values()][1](); // Fire the restart (index 0 is the watchdog).
-  assert.equal(h.events.filter(e => e === 'audio.play').length, 2);
-  assert.equal(h.q.state, 'playing'); assert.equal(h.spoken.length, 1);
+  assert.equal(h.q.state, 'paused'); assert.equal(h.q.background.audio, null);
   h.hide(); h.show(); assert.equal(h.audios.length, 1); assert.equal(h.spoken.length, 1);
 });
 
@@ -268,15 +247,13 @@ test('unsupported media actions and absent Media Session are graceful', () => {
   assert.equal(noMedia.q.state, 'playing'); noMedia.q.stop(); assert.equal(noMedia.revoked.length, 1);
 });
 
-test('another real media owner degrades to foreground TTS without hijacking its session', () => {
+test('another real media owner prevents companion start; stopping never overwrites a replacement owner', () => {
   const h = setup({ enabled: true }); const realMetadata = { title: 'Real audiobook' };
   h.mediaSession.metadata = realMetadata; h.mediaSession.playbackState = 'playing'; h.q.play();
-  assert.equal(h.audios.length, 0); // No competing keepalive.
-  assert.equal(h.spoken.length, 1); // Speech still starts; only the keepalive is off.
-  assert.equal(h.q.sessionBackground, false);
+  assert.equal(h.audios.length, 0); assert.equal(h.spoken.length, 0);
   assert.equal(h.mediaSession.metadata, realMetadata); assert.equal(h.actions.size, 0);
   const active = setup({ enabled: true, otherMedia: [{ paused: false, ended: false }] }); active.q.play();
-  assert.equal(active.audios.length, 0); assert.equal(active.spoken.length, 1);
+  assert.equal(active.audios.length, 0);
   const takeover = setup({ enabled: true }); takeover.q.play();
   takeover.mediaSession.metadata = realMetadata; takeover.mediaSession.playbackState = 'playing';
   const realPlay = () => {}; takeover.actions.set('play', realPlay); takeover.q.stop();
@@ -302,14 +279,14 @@ test('diagnostic playback never activates background experiment and suspends whe
 test('saved preference and disabled warning are retained; version/cache markers stay consistent', () => {
   assert.match(source, /backgroundTts: localStorage\.getItem\('backgroundTts'\) === 'true'/);
   assert.match(source, /localStorage\.setItem\('backgroundTts', String\(enabled\)\)/);
-  assert.match(source, /背景聽書（實驗）/);
-  assert.match(source, /以靜音音軌保持背景朗讀/);
+  assert.match(source, /背景聽書（實驗，暫停提供）/);
+  assert.match(source, /無法保證背景播放/);
   const version = source.match(/const APP_VERSION = '([^']+)'/)[1];
   assert.ok(readFileSync(new URL('../index.html', import.meta.url), 'utf8').includes(`?v=${version}`));
   assert.ok(readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8').includes(`?v=${version}`));
 });
 
-test('enabled switch persists preference without pausing or native cancel', () => {
+test('disabled switch retains stored preference without pausing or native cancel', () => {
   const storage = new Map();
   const binder = source.slice(source.indexOf('function bindPanelEvents()'), source.indexOf('function bindEvents()'));
   function panel() {
@@ -330,11 +307,12 @@ test('enabled switch persists preference without pausing or native cancel', () =
     return { html, state, calls, change: value => listeners.get('change')({ target: { checked: value } }) };
   }
   const first = panel(); assert.doesNotMatch(first.html, /type="checkbox" checked/);
-  assert.doesNotMatch(first.html, /disabled/);
-  first.change(true); assert.equal(storage.get('backgroundTts'), 'true'); assert.equal(first.state.backgroundTts, true);
+  assert.match(first.html, /disabled/);
+  first.change(true); assert.equal(storage.has('backgroundTts'), false); assert.equal(first.state.backgroundTts, false);
   assert.deepEqual(first.calls, []);
-  const reload = panel(); assert.match(reload.html, /type="checkbox" checked/);
-  reload.change(false); assert.equal(storage.get('backgroundTts'), 'false');
+  storage.set('backgroundTts', 'true');
+  const reload = panel(); assert.doesNotMatch(reload.html, /type="checkbox" checked/);
+  reload.change(false); assert.equal(storage.get('backgroundTts'), 'true');
   assert.doesNotMatch(panel().html, /type="checkbox" checked/);
 });
 
@@ -355,20 +333,19 @@ test('wake lock acquired after hide/pause is immediately released', async () => 
   finish(sentinel); await pending; assert.equal(releases, 1); assert.equal(context.lock.sentinel, null);
 });
 
-test('production enables the opt-in companion; default OFF keeps the foreground-only model', () => {
-  assert.equal(productionAvailable, true);
-  const off = setup({ enabled: false, available: productionAvailable });
-  off.q.play();
-  assert.equal(off.spoken.length, 1); assert.equal(off.audios.length, 0); assert.equal(off.actions.size, 0);
-  assert.equal(off.q.sessionBackground, false);
-  off.hide(); assert.equal(off.q.state, 'paused'); // OFF: hidden still suspends.
-  off.show(); assert.equal(off.spoken.length, 1);
-  const on = setup({ enabled: true, available: productionAvailable });
-  on.q.play();
-  assert.equal(on.spoken.length, 1); assert.equal(on.audios.length, 1);
-  assert.deepEqual(on.events.slice(0, 2), ['audio.play', 'speech.speak']);
-  assert.equal(on.q.sessionBackground, true);
-  on.hide(); assert.equal(on.q.state, 'playing'); // ON: hidden preserves speech.
+test('production hard-disables companion media even for a stored ON preference', () => {
+  assert.equal(productionAvailable, false);
+  for (const enabled of [false, true]) {
+    const h = setup({ enabled, available: productionAvailable, rejectPlay: true, throwPlay: true });
+    h.q.play();
+    assert.equal(h.spoken.length, 1, 'first speak must occur before Play returns');
+    assert.equal(h.events[0], 'speech.speak');
+    assert.equal(h.events.includes('speech.cancel'), false);
+    assert.equal(h.audios.length, 0); assert.equal(h.actions.size, 0);
+    assert.equal(h.q.sessionBackground, false);
+    h.hide(); assert.equal(h.q.state, 'paused');
+    h.show(); assert.equal(h.spoken.length, 1);
+  }
 });
 
 function assertToolbar(h, expected) {
@@ -378,17 +355,15 @@ function assertToolbar(h, expected) {
     expected === 'playing' ? '朗讀中' : expected === 'paused' ? '已暫停，點播放繼續' : '');
 }
 
-test('switch toggles the opt-in; Play with ON starts the keepalive without canceling speech', () => {
+test('OFF->ON->Play and ON->OFF->Play never cancel native speech on switch or Play', () => {
   for (const enabled of [false, true]) {
     const h = setup({ enabled, available: productionAvailable, ui: true });
     assertToolbar(h, 'idle');
     h.click('#setBtn'); h.change(!enabled); h.click('#panelX'); h.click('#rfPlay');
     assertToolbar(h, 'playing');
     assert.equal(h.events.includes('speech.cancel'), false);
-    assert.equal(h.spoken.length, 1);
-    // The enabled switch flips the saved preference: initially-OFF becomes ON (audio), and vice versa.
-    assert.equal(h.audios.length, enabled ? 0 : 1);
-    assert.equal(h.state.backgroundTts, !enabled, 'enabled UI persists the switched preference');
+    assert.equal(h.spoken.length, 1); assert.equal(h.audios.length, 0);
+    assert.equal(h.state.backgroundTts, enabled, 'disabled UI cannot change saved preference');
   }
 });
 
@@ -405,7 +380,7 @@ test('toggle while playing or paused cannot interrupt, enqueue, change voice gen
   h.change(false); h.change(true); assertToolbar(h, 'paused'); h.click('#rfPlay');
   assertToolbar(h, 'playing');
   assert.equal(h.events.filter(e => e === 'speech.cancel').length, cancellations);
-  assert.equal(h.spoken.length, 2); assert.equal(h.audios.length, 2);
+  assert.equal(h.spoken.length, 2); assert.equal(h.audios.length, 0);
 });
 
 test('settings close/reopen and actual panel rerender keep exactly one toolbar click handler', () => {
@@ -426,32 +401,31 @@ test('settings close/reopen and actual panel rerender keep exactly one toolbar c
     assert.equal(h.spoken.length, before + 1);
     assert.equal(h.events.filter(e => e === 'speech.cancel').length, cancellations + 1);
   }
-  assert.equal(h.audios.length, 3); assert.equal(h.actions.size, 3);
+  assert.equal(h.audios.length, 0); assert.equal(h.actions.size, 0);
 });
 
-test('companion start throwing synchronously still degrades to speech without breaking Play', async () => {
-  const h = setup({ enabled: true, available: productionAvailable, ui: true });
-  h.q.background.start = () => { throw new Error('boom'); };
-  h.click('#rfPlay');
-  assert.equal(h.q.state, 'playing');
-  assert.equal(h.nodes.get('#rfPlay').textContent, '⏸');
-  assert.equal(h.spoken.length, 1);
-  assert.equal(h.q.sessionBackground, false);
-  assert.match(h.q.notice, /背景保活未啟動/);
-  assert.equal(h.events.includes('speech.cancel'), false);
+test('production Play never calls audio rejection/onpause path, including fresh generations', async () => {
+  const h = setup({ enabled: true, available: productionAvailable, rejectPlay: true, ui: true });
+  h.q.background.start = () => { throw new Error('companion must remain unreachable'); };
+  h.click('#rfPlay'); const staleEnd = h.spoken[0].onend;
+  h.click('#rfPlay'); h.click('#setBtn'); h.change(false); h.click('#rfPlay'); const fresh = h.q.currentUtterance;
+  staleEnd(); await Promise.resolve();
+  assertToolbar(h, 'playing');
+  assert.equal(h.q.currentUtterance, fresh); assert.equal(h.q.state, 'playing');
+  assert.equal(h.spoken.length, 2); assert.equal(h.audios.length, 0);
+  assert.equal(h.events.filter(e => e === 'speech.cancel').length, 1);
 });
 
-test('stored ON still respects sleep expiry and watchdog; watchdog releases the keepalive', () => {
+test('production stored ON still respects sleep expiry and watchdog without media retries', () => {
   const h = setup({ enabled: true, available: productionAvailable }); h.q.play();
   h.state.sleepUntil = Date.now() - 1; h.spoken[0].onend();
   assert.equal(h.q.state, 'paused'); assert.equal(h.spoken.length, 1);
   const w = setup({ enabled: true, available: productionAvailable }); w.q.play();
   [...w.timers.values()][0](); w.show();
-  assert.equal(w.q.state, 'idle'); assert.equal(w.spoken.length, 1);
-  assert.equal(w.q.background.audio, null); assert.equal(w.revoked.length, 1);
+  assert.equal(w.q.state, 'idle'); assert.equal(w.spoken.length, 1); assert.equal(w.audios.length, 0);
 });
 
-test('stale audio.onpause cannot affect a new generation', () => {
+test('dormant experiment stale audio.onpause cannot cancel a new generation', () => {
   const h = setup({ enabled: true, available: true }); h.q.play();
   const stalePause = h.audios[0].onpause;
   h.q.pause(); h.q.play(); const fresh = h.q.currentUtterance;
