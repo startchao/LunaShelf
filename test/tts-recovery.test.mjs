@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { TtsPlaybackGeneration } from '../src/tts-playback-generation.js';
+import { TtsBackgroundSession } from '../src/tts-background-session.js';
 const source = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 function setup(voices = []) {
   const saved = new Map(), timers = new Map(), spoken = [];
   let nextTimer = 0;
   const state = {currentBook: {id:'one', paragraphs:['甲'.repeat(600), '第二段'], progressPara:0}, pages:[{startPara:0}], currentPage:0, ttsVolume:1};
-  const context = vm.createContext({state, TtsPlaybackGeneration, console,
+  const context = vm.createContext({state, TtsPlaybackGeneration, TtsBackgroundSession, console,
     localStorage: {getItem:k=>saved.get(k) ?? null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
     SpeechSynthesisUtterance: class {constructor(text){this.text=text;}},
     speechSynthesis:{getVoices:()=>voices,speak:u=>spoken.push(u),cancel:()=>{},speaking:true,pending:true},

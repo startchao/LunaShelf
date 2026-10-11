@@ -20,8 +20,8 @@ TXT-first personal novel reader for Tony.
 - Custom font import
 - Separate, persistent novel and English reading layouts (font, size, line height, paragraph spacing, margins, and table mode)
 - English comfort typography with left alignment and an iPhone-friendly serif stack
-- Queue-based Chinese TTS
-- Silent HTMLAudioElement + Media Session setup to improve routing to system/car audio while CarPlay is active
+- Queue-based Chinese/English TTS with independently selected voices
+- Optional, default-OFF 背景聽書（實驗）: a single silent WAV companion and best-effort Media Session play/pause/stop controls. iOS background execution is not guaranteed; see [experiment lifecycle and real-device QA](docs/background-tts-experiment.md).
 - Manual force-refresh / cache clearing controls
 
 ## Local development
