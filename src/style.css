@@ -1,7 +1,15 @@
+@font-face {
+  font-family: "MarukoGothicCJKtc";
+  src: url("https://cdn.jsdelivr.net/gh/max32002/maruko-gothic@1.015/webfont/CJK%20TC/MarukoGothicCJKtc-Regular.woff2") format("woff2");
+  font-display: swap;
+}
 :root {
   --font-system: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Noto Sans TC", "PingFang TC", sans-serif;
   --font-serif: "Noto Serif TC", "Songti TC", "PMingLiU", serif;
   --font-english-serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, "Noto Serif TC", serif;
+  --font-iansui: "Iansui", "Noto Serif TC", "Songti TC", serif;
+  --font-maruko: "MarukoGothicCJKtc", "PingFang TC", "Noto Sans TC", sans-serif;
+  --font-bailu: "BailuKai", "Noto Serif TC", "Songti TC", serif;
   --bg: #f6f0e8;
   --bg2: #fffaf3;
   --bg3: #f1e7d7;

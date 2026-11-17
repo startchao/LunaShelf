@@ -49,3 +49,11 @@ npm run build
 - cloud TTS
 - native iOS wrapper
 - Service Worker offline cache
+
+## 內建字體
+
+閱讀設定內建三款 SIL OFL 1.1 開源字體，第一次選用時才下載：
+
+- 芫荽體（Iansui，ButTaiwan）— 經 Google Fonts 載入
+- 馬路口圓體（Maruko Gothic，max32002）— 經作者官方 webfont（jsDelivr）載入
+- 白鷺楷（BailuKai，Hu Yen-Chuan，衍生自原俠正楷）— 子集化 woff2 自托管於 `public/fonts/bailu/`（字集：Big5 常用字＋本站書庫實際用字；授權全文見該目錄 OFL.txt）
